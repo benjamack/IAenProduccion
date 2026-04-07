@@ -56,4 +56,4 @@ GET /health
 ## Equipo
 
 - Benja Mackinnon
-- Franco [apellido]
+- Franco Moscato
