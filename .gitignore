@@ -1,0 +1,27 @@
+# Data
+data/*.csv
+data/*.parquet
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# MLflow
+mlflow-data/
+
+# Feast
+feature_store/data/
+feature_store/registry.db
+feature_store/online_store.db
+
+# Airflow
+logs/
+airflow.db
+airflow-webserver.pid
+
+# OS
+.DS_Store
