@@ -12,6 +12,8 @@ venv/
 
 # MLflow
 mlflow-data/
+mlflow.db
+mlruns/
 
 # Feast
 feature_store/data/
