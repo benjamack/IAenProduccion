@@ -20,15 +20,20 @@ CAT_FEATURES = [
 TARGET = "prod_gas"
 
 EXPERIMENTS = [
-    {'model_type': 'random_forest', 'model_params': {'n_estimators': 50,  'random_state': 204}, 'target': 'prod_gas', 'features': NUM_FEATURES+CAT_FEATURES}
+    {'model_type': 'random_forest', 'model_params': {'n_estimators': 50,  'random_state': 204}, 'target': 'prod_gas', 'features': NUM_FEATURES+CAT_FEATURES},
+    {'model_type': 'random_forest', 'model_params': {'n_estimators': 30,  'random_state': 204}, 'target': 'prod_gas', 'features': NUM_FEATURES+CAT_FEATURES}
 ]
+
+
 
 @dag(
     dag_id='ml_training_pipeline',
-    description='Pipeline de dentrenamiento de modelos con Airflow',
-    start_date=datetime(2026, 1, 1)
+    description='Pipeline de entrenamiento de modelos con Airflow',
+    start_date=datetime(2026, 1, 1),
+    params={
+        "experiment_name": "Airflow-MLflow" 
+    }
 )
-
 def ml_training_pipeline():
     @task
     def train_model(data_path, experiment):
@@ -36,10 +41,14 @@ def ml_training_pipeline():
         import pickle
         import mlflow
         import mlflow.sklearn
+        from airflow.sdk import get_current_context
 
         from sklearn.ensemble import RandomForestRegressor
         from sklearn.model_selection import train_test_split
         from sklearn.metrics import mean_squared_error, r2_score
+
+        context = get_current_context()
+        experiment_name = context["params"]["experiment_name"]
 
         # Config
         model_type = experiment["model_type"]
@@ -47,7 +56,7 @@ def ml_training_pipeline():
         target = experiment["target"]
         features = experiment["features"]
 
-        mlflow.set_experiment("Airflow-MLflow")
+        mlflow.set_experiment(experiment_name)
 
         # Load data
         data = pd.read_csv(data_path)
@@ -60,8 +69,10 @@ def ml_training_pipeline():
         )
 
         mlflow.sklearn.autolog()
+        params_str = "_".join(f"{k}{v}" for k, v in sorted(params.items()))
+        model_name = f"{model_type}_{params_str}"
 
-        with mlflow.start_run():
+        with mlflow.start_run(run_name=model_name):
             # Modelo dinámico
             if model_type == "random_forest":
                 model = RandomForestRegressor(**params)
@@ -80,6 +91,7 @@ def ml_training_pipeline():
             mlflow.log_metric("r2", r2)
 
             # Loggear TODO el experimento
+            mlflow.log_param("model_name", model_name)
             mlflow.log_param("model_type", model_type)
             mlflow.log_param("target", target)
             mlflow.log_param("n_features", len(features))
@@ -87,6 +99,11 @@ def ml_training_pipeline():
             # Loggear hiperparámetros dinámicamente
             for k, v in params.items():
                 mlflow.log_param(k, v)
+
+            mlflow.sklearn.log_model(
+            model,
+            artifact_path="model",
+            registered_model_name=model_name)
   
     for i, exp in enumerate(EXPERIMENTS):
         train_model(
