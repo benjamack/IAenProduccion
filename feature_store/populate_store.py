@@ -27,6 +27,7 @@ import os
 import subprocess
 import urllib.request
 from pathlib import Path
+from datetime import datetime
 
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder
@@ -144,6 +145,11 @@ def prepare_offline_store() -> Path:
     # Parquet necesita tipos coherentes para que Feast lea el schema.
     features_df["fecha"] = pd.to_datetime(features_df["fecha"])
     features_df.to_parquet(PARQUET_PATH, index=False)
+
+    #archival de datos
+    date_str = datetime.now().strftime("%Y%m%d")
+    archival_parquet_path = PARQUET_PATH.parent / f"{PARQUET_PATH.stem}_{date_str}{PARQUET_PATH.suffix}"
+    features_df.to_parquet(archival_parquet_path, index=False)
 
     logger.info(
         "Offline store escrito: %s filas en %s", len(features_df), PARQUET_PATH

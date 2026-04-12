@@ -1,28 +1,14 @@
 from airflow.decorators import dag, task
 from airflow.operators.empty import EmptyOperator
 from airflow.models.param import Param
+from airflow.sdk import get_current_context
 import requests
 from datetime import datetime
+from pathlib import Path
+import yaml
 
-
-DATA_OUTPUT_PATH = "/opt/airflow/data/data_preprocessed.csv"
-
-NUM_FEATURES = [
-    "prod_pet", "prod_agua", "iny_agua", "iny_gas",
-    "iny_co2", "tef", "vida_util", "profundidad",
-    "anio", "mes"
-]
-
-CAT_FEATURES = [
-    "tipoextraccion", "tipopozo", "provincia", "cuenca"
-]
-
-TARGET = "prod_gas"
-
-EXPERIMENTS = [
-    {'model_type': 'random_forest', 'model_params': {'n_estimators': 50,  'random_state': 204}, 'target': 'prod_gas', 'features': NUM_FEATURES+CAT_FEATURES},
-    {'model_type': 'random_forest', 'model_params': {'n_estimators': 30,  'random_state': 204}, 'target': 'prod_gas', 'features': NUM_FEATURES+CAT_FEATURES}
-]
+DATA_PATH = Path("/opt/airflow/feature_store/data/well_features.parquet")
+EXP_PATH = Path("/opt/airflow/experimentos")
 
 
 
@@ -31,17 +17,29 @@ EXPERIMENTS = [
     description='Pipeline de entrenamiento de modelos con Airflow',
     start_date=datetime(2026, 1, 1),
     params={
-        "experiment_name": "Airflow-MLflow" 
+        "experiment_name": "Airflow-MLflow",
+        "fecha_data": "Ultima(Default)"
     }
 )
 def ml_training_pipeline():
     @task
-    def train_model(data_path, experiment):
+    def get_experiments():
+        context = get_current_context()
+        experiment_name = context["params"]["experiment_name"]
+
+        experiment_path = EXP_PATH / f"{experiment_name}.yaml"
+
+        with open(experiment_path, "r") as f:
+            config = yaml.safe_load(f)
+            experiments = config["experiments"]
+        return experiments
+
+    @task
+    def train_model(experiment):
         import pandas as pd
         import pickle
         import mlflow
         import mlflow.sklearn
-        from airflow.sdk import get_current_context
 
         from sklearn.ensemble import RandomForestRegressor
         from sklearn.model_selection import train_test_split
@@ -49,6 +47,7 @@ def ml_training_pipeline():
 
         context = get_current_context()
         experiment_name = context["params"]["experiment_name"]
+        fecha_data = context["params"]["fecha_data"]
 
         # Config
         model_type = experiment["model_type"]
@@ -58,8 +57,12 @@ def ml_training_pipeline():
 
         mlflow.set_experiment(experiment_name)
 
-        # Load data
-        data = pd.read_csv(data_path)
+        #cargo data
+        if fecha_data=="Ultima(Default)":
+            data = pd.read_parquet(DATA_PATH)
+        else:
+            data_especifica = DATA_PATH.parent / f"{DATA_PATH.stem}_{fecha_data}{DATA_PATH.suffix}"
+            data = pd.read_parquet(data_especifica)
 
         X = data[features]
         y = data[target]
@@ -95,20 +98,16 @@ def ml_training_pipeline():
             mlflow.log_param("model_type", model_type)
             mlflow.log_param("target", target)
             mlflow.log_param("n_features", len(features))
+            mlflow.log_param("fecha_de_data", fecha_data)
 
             # Loggear hiperparámetros dinámicamente
             for k, v in params.items():
                 mlflow.log_param(k, v)
 
-            mlflow.sklearn.log_model(
-            model,
-            artifact_path="model",
-            registered_model_name=model_name)
-  
-    for i, exp in enumerate(EXPERIMENTS):
-        train_model(
-            data_path=DATA_OUTPUT_PATH,
-            experiment=exp
-        )
+
+    experiments = get_experiments()
+    train_model.expand(experiment=experiments)
+
+    
 
 ml_training_pipeline()
