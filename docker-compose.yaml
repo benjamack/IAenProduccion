@@ -82,6 +82,7 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
     - ${AIRFLOW_PROJ_DIR:-.}/data:/opt/airflow/data
     - ${AIRFLOW_PROJ_DIR:-.}/feature_store:/opt/airflow/feature_store
+    - ${AIRFLOW_PROJ_DIR:-.}/experimentos:/opt/airflow/experimentos
     - ./mlruns:/mlflow/mlruns
  
   user: "${AIRFLOW_UID:-50000}:0"
