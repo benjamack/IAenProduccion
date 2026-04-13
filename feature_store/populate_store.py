@@ -133,9 +133,15 @@ def prepare_offline_store() -> Path:
     lag_cols = [f"{t}_t{l}" for t in TARGET_COLS for l in LAG_PERIODS]
     df = df.dropna(subset=lag_cols).reset_index(drop=True)
 
+    # Fecha de la última lectura disponible por pozo (broadcasteada a todas
+    # las filas del pozo). En el online store aparecerá en la última fila,
+    # que es lo que Franco consume al inferir.
+    df["fecha_max"] = df.groupby("idpozo")["fecha"].transform("max")
+
     # Asegurar tipos para Feast
     df["idpozo"] = df["idpozo"].astype("int64")
     df["fecha"] = pd.to_datetime(df["fecha"])
+    df["fecha_max"] = pd.to_datetime(df["fecha_max"])
 
     df.to_parquet(PARQUET_PATH, index=False)
 

@@ -12,7 +12,7 @@ Sigue el patrón de la Clase 3 (IA en Producción, UdeSA 2026):
 from datetime import timedelta
 
 from feast import Entity, FeatureView, Field, FileSource, ValueType
-from feast.types import Float32, Int32, Int64
+from feast.types import Float32, Int32, Int64, UnixTimestamp
 
 
 OFFLINE_PARQUET_PATH = "/opt/airflow/feature_store/data/well_features.parquet"
@@ -57,6 +57,9 @@ well_stats = FeatureView(
         # --- Estáticas ---
         Field(name="tef", dtype=Float32),
         Field(name="profundidad", dtype=Float32),
+
+        # Fecha de la última lectura disponible del pozo (para inferencia).
+        Field(name="fecha_max", dtype=UnixTimestamp),
 
         # --- Categóricas (encoded con LabelEncoder) ---
         Field(name="tipoextraccion", dtype=Int32),
