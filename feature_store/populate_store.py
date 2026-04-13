@@ -121,6 +121,14 @@ def prepare_offline_store() -> Path:
             .astype("float32")
         )
 
+    # Forward targets: producción en T+1 y T+2 (para predicción multi-step)
+    # NO se agregan al FeatureView — son targets, no features. Últimas 1-2
+    # filas por pozo quedarán con NaN (Franco filtra en training).
+    for target in TARGET_COLS:
+        for lead in [1, 2]:
+            col_name = f"{target}_f{lead}"
+            df[col_name] = grouped[target].shift(-lead).astype("float32")
+
     # Descartar filas sin lags completos (primeros 3 meses de cada pozo)
     lag_cols = [f"{t}_t{l}" for t in TARGET_COLS for l in LAG_PERIODS]
     df = df.dropna(subset=lag_cols).reset_index(drop=True)
