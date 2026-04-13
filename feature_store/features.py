@@ -46,6 +46,14 @@ well_stats = FeatureView(
         Field(name="prod_pet", dtype=Float32),
         Field(name="prod_agua", dtype=Float32),
 
+        # --- Forward targets (T+1, T+2 — para predicción multi-step) ---
+        Field(name="prod_gas_f1", dtype=Float32),
+        Field(name="prod_gas_f2", dtype=Float32),
+        Field(name="prod_pet_f1", dtype=Float32),
+        Field(name="prod_pet_f2", dtype=Float32),
+        Field(name="prod_agua_f1", dtype=Float32),
+        Field(name="prod_agua_f2", dtype=Float32),
+
         # --- Estáticas ---
         Field(name="tef", dtype=Float32),
         Field(name="profundidad", dtype=Float32),
