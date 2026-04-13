@@ -1,26 +1,54 @@
 experiments:
   - model_type: random_forest
     model_params:
+      n_estimators: 100
+      random_state: 204
+    target: prod_gas
+    features:
+      # Lag features (producción en meses anteriores)
+      - prod_gas_t1
+      - prod_gas_t2
+      - prod_gas_t3
+      - prod_pet_t1
+      - prod_pet_t2
+      - prod_pet_t3
+      - prod_agua_t1
+      - prod_agua_t2
+      - prod_agua_t3
+      # Rolling averages (últimos 10 meses)
+      - avg_prod_gas_10m
+      - avg_prod_pet_10m
+      - avg_prod_agua_10m
+      # Estáticas
+      - tef
+      - profundidad
+      # Categóricas
+      - tipoextraccion
+      - tipopozo
+      - provincia
+      - cuenca
+
+  - model_type: random_forest
+    model_params:
       n_estimators: 50
       random_state: 204
     target: prod_gas
     features:
-      - prod_gas
-      - prod_pet
-      - prod_agua
+      - prod_gas_t1
+      - prod_gas_t2
+      - prod_gas_t3
+      - prod_pet_t1
+      - prod_pet_t2
+      - prod_pet_t3
+      - prod_agua_t1
+      - prod_agua_t2
+      - prod_agua_t3
+      - avg_prod_gas_10m
+      - avg_prod_pet_10m
+      - avg_prod_agua_10m
       - tef
       - profundidad
       - tipoextraccion
-
-  - model_type: random_forest
-    model_params:
-      n_estimators: 30
-      random_state: 204
-    target: prod_gas
-    features:
-      - prod_gas
-      - prod_pet
-      - prod_agua
-      - tef
-      - profundidad
-      - tipoextraccion
+      - tipopozo
+      - provincia
+      - cuenca
