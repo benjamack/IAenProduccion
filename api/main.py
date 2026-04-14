@@ -21,7 +21,7 @@ app = FastAPI(
 )
 
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:9090")
-FEATURE_STORE_PATH = Path("/data")
+FEATURE_STORE_PATH = Path("/opt/airflow/feature_store")
 
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 
@@ -117,10 +117,10 @@ def get_forecast(
     gas_input = df.reindex(columns=gas_features)
     pet_input = df.reindex(columns=pet_features)
 
-    output_gas=models["gas_model"].predict(gas_input)
-    output_pet=models["pet_model"].predict(pet_input)
+    output_gas = float(models["gas_model"].predict(gas_input)[0])
+    output_pet = float(models["pet_model"].predict(pet_input)[0])
 
-    data=[]
+    data = []
     for i in range(3):
         data.append(ProductionPoint(date=str(i), prod_gas=output_gas, prod_pet=output_pet))
 
@@ -139,7 +139,7 @@ def get_forecast(
 def get_wells(
     date_query: date = Query(..., description="Fecha para la cual se hace la consulta (YYYY-MM-DD)."),
 ):
-    df = pd.read_parquet("data/well_features.parquet")
+    df = pd.read_parquet(FEATURE_STORE_PATH / "data" / "well_features.parquet")
     df = df[df["fecha"] <= pd.to_datetime(date_query)]
     wells = df["idpozo"].unique()
 
