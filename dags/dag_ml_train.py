@@ -1,15 +1,11 @@
 from airflow.decorators import dag, task
-from airflow.operators.empty import EmptyOperator
-from airflow.models.param import Param
 from airflow.sdk import get_current_context
-import requests
 from datetime import datetime
 from pathlib import Path
 import yaml
 
 DATA_PATH = Path("/opt/airflow/feature_store/data/well_features.parquet")
 EXP_PATH = Path("/opt/airflow/experimentos")
-
 
 
 @dag(
@@ -37,7 +33,6 @@ def ml_training_pipeline():
     @task
     def train_model(experiment):
         import pandas as pd
-        import pickle
         import mlflow
         import mlflow.sklearn
 
@@ -49,7 +44,6 @@ def ml_training_pipeline():
         experiment_name = context["params"]["experiment_name"]
         fecha_data = context["params"]["fecha_data"]
 
-        # Config
         model_type = experiment["model_type"]
         params = experiment["model_params"]
         target = experiment["target"]
@@ -57,15 +51,17 @@ def ml_training_pipeline():
 
         mlflow.set_experiment(experiment_name)
 
-        #cargo data
-        if fecha_data=="Ultima(Default)":
+        if fecha_data == "Ultima(Default)":
             data = pd.read_parquet(DATA_PATH)
         else:
             data_especifica = DATA_PATH.parent / f"{DATA_PATH.stem}_{fecha_data}{DATA_PATH.suffix}"
             data = pd.read_parquet(data_especifica)
 
-        X = data[features]
-        y = data[target]
+        cols = features + [target] if isinstance(target, str) else features + target
+        df_model = data[cols].dropna()
+
+        X = df_model[features]
+        y = df_model[target]
 
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=0.2, random_state=42
@@ -76,7 +72,6 @@ def ml_training_pipeline():
         model_name = f"{model_type}_{params_str}"
 
         with mlflow.start_run(run_name=model_name):
-            # Modelo dinámico
             if model_type == "random_forest":
                 model = RandomForestRegressor(**params)
             else:
@@ -86,28 +81,23 @@ def ml_training_pipeline():
 
             y_pred = model.predict(X_test)
 
-            # Métricas
             mse = mean_squared_error(y_test, y_pred)
             r2 = r2_score(y_test, y_pred)
 
             mlflow.log_metric("mse", mse)
             mlflow.log_metric("r2", r2)
 
-            # Loggear TODO el experimento
             mlflow.log_param("model_name", model_name)
             mlflow.log_param("model_type", model_type)
             mlflow.log_param("target", target)
             mlflow.log_param("features", features)
             mlflow.log_param("fecha_de_data", fecha_data)
 
-            # Loggear hiperparámetros dinámicamente
             for k, v in params.items():
                 mlflow.log_param(k, v)
-
 
     experiments = get_experiments()
     train_model.expand(experiment=experiments)
 
-    
 
 ml_training_pipeline()

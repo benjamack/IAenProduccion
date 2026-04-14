@@ -5,8 +5,8 @@ from datetime import datetime
 @dag(
     dag_id="automatic_model_selection",
     description="Pipeline de seleccion de modelo automatico para produccion",
-    start_date=datetime(2024, 1, 1),  # ⚠️ mejor en el pasado
-    schedule=None,  # manual
+    start_date=datetime(2024, 1, 1),
+    schedule=None,
     catchup=False,
     params={
         "decision_metric": "mse",
@@ -45,8 +45,6 @@ def automatic_model_selection():
 
         best_run = runs[0]
 
-        # MLflow 3: el modelo logueado vive como "logged model" y queda
-        # referenciado en run.outputs.model_outputs
         if not best_run.outputs or not best_run.outputs.model_outputs:
             raise ValueError(
                 f"El run {best_run.info.run_id} no tiene logged models asociados"
