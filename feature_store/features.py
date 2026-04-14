@@ -58,6 +58,9 @@ well_stats = FeatureView(
         Field(name="tef", dtype=Float32),
         Field(name="profundidad", dtype=Float32),
 
+        # --- Fecha como feature (unix seconds) para saber max_fecha por pozo ---
+        Field(name="fecha_ts", dtype=Int64),
+
         # --- Categóricas (encoded con LabelEncoder) ---
         Field(name="tipoextraccion", dtype=Int32),
         Field(name="tipopozo", dtype=Int32),

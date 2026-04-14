@@ -65,6 +65,34 @@ def download_data() -> Path:
     return CSV_PATH
 
 
+def build_inference_row(df_group: pd.DataFrame) -> pd.Series:
+    """Genera la fila T+1 por pozo: lags desde las últimas observaciones,
+    rolling avg sobre los últimos WINDOW_SIZE meses, targets en None.
+    """
+
+    df_group = df_group.sort_values("fecha")
+    if len(df_group) == 0:
+        return pd.Series(dtype="object")
+
+    last = df_group.iloc[-1].copy()
+    last["fecha"] = last["fecha"] + pd.DateOffset(months=1)
+
+    for target in TARGET_COLS:
+        last[f"{target}_t1"] = df_group.iloc[-1][target]
+        last[f"{target}_t2"] = df_group.iloc[-2][target] if len(df_group) > 1 else None
+        last[f"{target}_t3"] = df_group.iloc[-3][target] if len(df_group) > 2 else None
+
+    for target in TARGET_COLS:
+        last[f"avg_{target}_{WINDOW_SIZE}m"] = df_group[target].tail(WINDOW_SIZE).mean()
+
+    for target in TARGET_COLS:
+        for lead in [1, 2]:
+            last[f"{target}_f{lead}"] = None
+        last[target] = None
+
+    return last
+
+
 def prepare_offline_store() -> Path:
     """Lee el CSV crudo y escribe `well_features.parquet` (offline store).
 
@@ -136,6 +164,17 @@ def prepare_offline_store() -> Path:
     # Asegurar tipos para Feast
     df["idpozo"] = df["idpozo"].astype("int64")
     df["fecha"] = pd.to_datetime(df["fecha"])
+
+    # Construimos la fila de inferencia (T+1 desde la última observación) por pozo
+    grouped_for_inference = df.groupby("idpozo", sort=False, group_keys=False)
+    inference_rows = grouped_for_inference.apply(build_inference_row)
+    inference_rows = inference_rows.dropna(subset=["idpozo"]).reset_index(drop=True)
+
+    df = pd.concat([df, inference_rows], ignore_index=True)
+    df = df.sort_values(["idpozo", "fecha"]).reset_index(drop=True)
+
+    # fecha_ts: unix seconds, para poder leer la fecha máxima por pozo desde el online store
+    df["fecha_ts"] = (df["fecha"].astype("int64") // 10**9).astype("int64")
 
     df.to_parquet(PARQUET_PATH, index=False)
 
