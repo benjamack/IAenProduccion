@@ -138,6 +138,18 @@ services:
       --port 9090
       --allowed-hosts "*"
 
+  api:
+    build: ./api
+    container_name: iaenproduccion-api
+    ports:
+      - "8000:8000"
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:9090
+    volumes:
+      - ./feature_store:/data
+    depends_on:
+      - mlflow
+
   airflow-apiserver:
     <<: *airflow-common
     command: api-server

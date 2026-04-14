@@ -1,0 +1,32 @@
+experiments:
+  - model_type: random_forest
+    model_params:
+      n_estimators: 25
+      random_state: 204
+    target: prod_gas
+    features:
+      # Lag features (producción en meses anteriores)
+      - prod_gas_t1
+      - prod_gas_t2
+      - prod_gas_t3
+      - profundidad
+      # Categóricas
+      - tipoextraccion
+      - tipopozo
+      - provincia
+      - cuenca
+
+  - model_type: random_forest
+    model_params:
+      n_estimators: 15
+      random_state: 204
+    target: prod_pet
+    features:
+      - prod_gas_t1
+      - prod_gas_t2
+      - prod_gas_t3
+      - prod_pet_t2
+      - prod_pet_t3
+      - prod_agua_t1
+      - provincia
+      - cuenca
