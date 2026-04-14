@@ -97,7 +97,7 @@ def ml_training_pipeline():
             mlflow.log_param("model_name", model_name)
             mlflow.log_param("model_type", model_type)
             mlflow.log_param("target", target)
-            mlflow.log_param("n_features", len(features))
+            mlflow.log_param("features", features)
             mlflow.log_param("fecha_de_data", fecha_data)
 
             # Loggear hiperparámetros dinámicamente

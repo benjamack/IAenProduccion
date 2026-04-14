@@ -5,6 +5,14 @@ from typing import Optional
 import mlflow
 import pandas as pd
 import os
+from feast import FeatureStore
+from pathlib import Path
+from mlflow.tracking import MlflowClient
+import json
+import ast
+
+models = {}
+features_map = {}
 
 app = FastAPI(
     title="Oil & Gas Forecast API",
@@ -12,9 +20,8 @@ app = FastAPI(
     description="API para consultar el listado de pozos y sus pronósticos de producción.",
 )
 
-MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
-MODEL_NAME = os.getenv("MODEL_NAME", "oil_gas_forecast")
-MODEL_STAGE = os.getenv("MODEL_STAGE", "Production")
+MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:9090")
+FEATURE_STORE_PATH = Path("/data")
 
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 
@@ -22,7 +29,8 @@ mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 
 class ProductionPoint(BaseModel):
     date: str
-    prod: float
+    prod_gas: float
+    prod_pet: float
 
 class ForecastResponse(BaseModel):
     id_well: str
@@ -33,25 +41,52 @@ class WellInfo(BaseModel):
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
-def load_model():
-    """Load the Production model from MLflow registry."""
-    model_uri = f"models:/{MODEL_NAME}/{MODEL_STAGE}"
-    return mlflow.sklearn.load_model(model_uri)
+def load_models():
+    global models, features_map
+
+    client = MlflowClient()
+
+    model_names = ["gas_model", "pet_model"] 
+
+    for model_name in model_names:
+
+        # Cargar modelo
+        model_uri = f"models:/{model_name}@production"
+        models[model_name] = mlflow.sklearn.load_model(model_uri)
+
+        # vemos version
+        model_version = client.get_model_version_by_alias(
+            name=model_name,
+            alias="production"
+        )
+
+        run = client.get_run(model_version.run_id)
+        features_str = run.data.params["features"]
+        features = ast.literal_eval(features_str)
+
+        features_map[model_name] = features
+
+        print(f"Modelo {model_name} cargado con {len(features_map[model_name])} features")
 
 
-def get_well_features(id_well: str) -> pd.DataFrame:
-    """Retrieve features for a well from the Feast online store."""
-    # TODO: integrate with Feast online store
-    # from feast import FeatureStore
-    # store = FeatureStore(repo_path="/app/feature_store")
-    # feature_vector = store.get_online_features(
-    #     features=[...],
-    #     entity_rows=[{"idpozo": int(id_well)}],
-    # ).to_df()
-    raise NotImplementedError("Feature store integration pending")
+def get_well_features(id_well: str,features) -> pd.DataFrame:
+    store = FeatureStore(repo_path=FEATURE_STORE_PATH)
+
+
+
+    df = store.get_online_features(
+        features=features,
+        entity_rows=[{"idpozo": int(id_well)}],
+    ).to_df()
+
+    return df
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
+
+@app.on_event("startup")
+def startup_event():
+   load_models()
 
 @app.get("/health")
 def health():
@@ -68,23 +103,26 @@ def get_forecast(
     date_start: date = Query(..., description="Fecha de inicio (YYYY-MM-DD)."),
     date_end: date = Query(..., description="Fecha de fin (YYYY-MM-DD)."),
 ):
+    global models, features_map
     if date_start > date_end:
         raise HTTPException(status_code=400, detail="date_start must be before date_end")
+    
+    gas_features = features_map["gas_model"]
+    pet_features = features_map["pet_model"]
+    features = list(set(gas_features + pet_features))
 
-    try:
-        model = load_model()
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Model not available: {str(e)}")
+    df=get_well_features(id_well,features)
 
-    # Generate monthly date range between date_start and date_end
-    months = pd.date_range(start=date_start, end=date_end, freq="MS")
+     # asegurar orden correcto
+    gas_input = df.reindex(columns=gas_features)
+    pet_input = df.reindex(columns=pet_features)
 
-    # TODO: build feature rows per month from Feast and run inference
-    # For now return placeholder zeros
-    data = [
-        ProductionPoint(date=str(m.date()), prod=0.0)
-        for m in months
-    ]
+    output_gas=models["gas_model"].predict(gas_input)
+    output_pet=models["pet_model"].predict(pet_input)
+
+    data=[]
+    for i in range(3):
+        data.append(ProductionPoint(date=str(i), prod_gas=output_gas, prod_pet=output_pet))
 
     return ForecastResponse(id_well=id_well, data=data)
 
@@ -93,10 +131,16 @@ def get_forecast(
     "/api/v1/wells",
     response_model=list[WellInfo],
     summary="Obtiene el listado de pozos.",
+    responses={
+        200: {
+            "description": "Listado de pozos obtenido exitosamente."
+        }}
 )
 def get_wells(
     date_query: date = Query(..., description="Fecha para la cual se hace la consulta (YYYY-MM-DD)."),
 ):
-    # TODO: query feature store / DB for wells active in date_query month
-    # For now return empty list until data pipeline is wired up
-    return []
+    df = pd.read_parquet("data/well_features.parquet")
+    df = df[df["fecha"] <= pd.to_datetime(date_query)]
+    wells = df["idpozo"].unique()
+
+    return [WellInfo(id_well=str(w)) for w in wells]
