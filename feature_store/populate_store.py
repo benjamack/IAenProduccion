@@ -173,6 +173,22 @@ def prepare_offline_store() -> Path:
     df = pd.concat([df, inference_rows], ignore_index=True)
     df = df.sort_values(["idpozo", "fecha"]).reset_index(drop=True)
 
+    # Re-cast después del concat: los inference rows vienen como Series object
+    # y ensucian los dtypes, lo que rompe la escritura al online store.
+    df["idpozo"] = df["idpozo"].astype("int64")
+    df["fecha"] = pd.to_datetime(df["fecha"])
+    for col in CAT_COLS:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(-1).astype("int32")
+    float_cols = (
+        TARGET_COLS
+        + STATIC_NUM_COLS
+        + [f"{t}_t{l}" for t in TARGET_COLS for l in LAG_PERIODS]
+        + [f"avg_{t}_{WINDOW_SIZE}m" for t in TARGET_COLS]
+        + [f"{t}_f{l}" for t in TARGET_COLS for l in [1, 2]]
+    )
+    for col in float_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce").astype("float32")
+
     # fecha_ts: unix seconds, para poder leer la fecha máxima por pozo desde el online store
     df["fecha_ts"] = (df["fecha"].astype("int64") // 10**9).astype("int64")
 

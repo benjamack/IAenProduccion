@@ -68,10 +68,14 @@ def get_well_features(id_well: str, features: list[str]) -> pd.DataFrame:
     store = FeatureStore(repo_path=FEATURE_STORE_PATH)
     feature_refs = [f"well_stats:{f}" for f in features]
 
+    print(f"[get_well_features] id_well={id_well} feature_refs={feature_refs}")
     df = store.get_online_features(
         features=feature_refs,
         entity_rows=[{"idpozo": int(id_well)}],
     ).to_df()
+    print("[get_well_features] df returned from online store:")
+    print(df.head())
+    print(f"[get_well_features] dtypes:\n{df.dtypes}")
 
     return df
 
@@ -107,6 +111,8 @@ def get_forecast(
     all_features = list(set(gas_features + pet_features + ["fecha_ts"]))
 
     df = get_well_features(id_well, all_features)
+    print(f"[forecast] gas_features={gas_features}")
+    print(f"[forecast] pet_features={pet_features}")
 
     if df.empty or df["fecha_ts"].isna().all():
         raise HTTPException(status_code=404, detail=f"No hay features online para el pozo {id_well}")
