@@ -146,10 +146,11 @@ services:
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:9090
     volumes:
-      - ./feature_store:/data
+      - ./feature_store:/opt/airflow/feature_store
+      - ./mlruns:/mlflow/mlruns
     depends_on:
       - mlflow
-
+      
   airflow-apiserver:
     <<: *airflow-common
     command: api-server

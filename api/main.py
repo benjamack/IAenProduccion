@@ -84,9 +84,9 @@ def get_well_features(id_well: str,features) -> pd.DataFrame:
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
 
-#@app.on_event("startup")
-#def startup_event():
-#    load_models()
+@app.on_event("startup")
+def startup_event():
+   load_models()
 
 @app.get("/health")
 def health():
@@ -122,7 +122,7 @@ def get_forecast(
 
     data=[]
     for i in range(3):
-        data.append(ProductionPoint(date=str(i), prod_gas=output_gas[i], prod_pet=output_pet[i]))
+        data.append(ProductionPoint(date=str(i), prod_gas=output_gas, prod_pet=output_pet))
 
     return ForecastResponse(id_well=id_well, data=data)
 
@@ -139,7 +139,7 @@ def get_forecast(
 def get_wells(
     date_query: date = Query(..., description="Fecha para la cual se hace la consulta (YYYY-MM-DD)."),
 ):
-    df = pd.read_parquet(FEATURE_STORE_PATH/"data/well_features.parquet")
+    df = pd.read_parquet("data/well_features.parquet")
     df = df[df["fecha"] <= pd.to_datetime(date_query)]
     wells = df["idpozo"].unique()
 

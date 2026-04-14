@@ -34,10 +34,8 @@ def automatic_model_selection():
         if experiment is None:
             raise ValueError(f"Experiment '{experiment_name}' no existe")
 
-        experiment_id = experiment.experiment_id
-
         runs = client.search_runs(
-            experiment_ids=[experiment_id],
+            experiment_ids=[experiment.experiment_id],
             order_by=[f"metrics.{decision_metric} {decision_logic}"],
             max_results=1,
         )
@@ -47,7 +45,16 @@ def automatic_model_selection():
 
         best_run = runs[0]
 
-        return {"run_id": best_run.info.run_id}
+        # MLflow 3: el modelo logueado vive como "logged model" y queda
+        # referenciado en run.outputs.model_outputs
+        if not best_run.outputs or not best_run.outputs.model_outputs:
+            raise ValueError(
+                f"El run {best_run.info.run_id} no tiene logged models asociados"
+            )
+
+        model_id = best_run.outputs.model_outputs[0].model_id
+        return {"model_id": model_id}
+
 
     @task
     def register_and_promote(model_info):
@@ -59,27 +66,23 @@ def automatic_model_selection():
 
         client = MlflowClient()
 
-        run_id = model_info["run_id"]
-        model_uri = f"runs:/{run_id}/model"
+        model_id = model_info["model_id"]
+        model_uri = f"models:/{model_id}"
 
-        # Crear modelo si no existe
         try:
             client.create_registered_model(model_name)
         except Exception:
             pass
 
-        # nueva version
         mv = client.create_model_version(
             name=model_name,
             source=model_uri,
-            run_id=run_id,
         )
 
-        # migramos
         client.set_registered_model_alias(
             name=model_name,
             alias="production",
-            version=mv.version
+            version=mv.version,
         )
 
     best_model = select_best_model()
