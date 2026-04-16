@@ -150,7 +150,8 @@ services:
       - ./mlruns:/mlflow/mlruns
     depends_on:
       - mlflow
-      
+      - redis
+
   airflow-apiserver:
     <<: *airflow-common
     command: api-server

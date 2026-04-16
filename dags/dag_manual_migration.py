@@ -31,19 +31,16 @@ def model_manual_migration():
         client = MlflowClient()
         model_uri = f"models:/{model_id}"
 
-        # Crear modelo registrado si no existe
         try:
             client.create_registered_model(model_name)
         except Exception:
             pass
 
-        # Nueva versión del modelo
         mv = client.create_model_version(
             name=model_name,
             source=model_uri,
         )
 
-        # Promover a production (alias)
         client.set_registered_model_alias(
             name=model_name,
             alias="production",

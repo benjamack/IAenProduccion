@@ -4,6 +4,6 @@ provider: local
 offline_store:
   type: file
 online_store:
-  type: sqlite
-  path: /opt/airflow/feature_store/online_store.db
+  type: redis
+  connection_string: redis:6379
 entity_key_serialization_version: 3
