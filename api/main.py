@@ -1,162 +1,184 @@
-from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel
+# app.py
+
+import ray
+from ray import serve
+from fastapi import FastAPI
 from datetime import date
 import mlflow
 import pandas as pd
-import os
+import ast
 from feast import FeatureStore
 from pathlib import Path
 from mlflow.tracking import MlflowClient
-import ast
+from fastapi import HTTPException
+import time
 
-models = {}
-features_map = {}
 
-app = FastAPI(
-    title="Oil & Gas Forecast API",
-    version="1.0.0",
-    description="API para consultar el listado de pozos y sus pronósticos de producción.",
-)
+app = FastAPI()
 
-MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:9090")
+MLFLOW_TRACKING_URI = "http://mlflow:9090"
 FEATURE_STORE_PATH = Path("/opt/airflow/feature_store")
-
-mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-
 MONTHLY_DECAY = 0.97
 
 
-class ProductionPoint(BaseModel):
-    date: str
-    prod_gas: float
-    prod_pet: float
+class ModelService:
+    def __init__(self):
+        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+        self.last_check = 0
+        self.check_interval = 60
+        self.current_versions = {}
+        self.load_models()
 
+    def load_models(self):
+        client = MlflowClient()
+        self.models = {}
+        self.features_map = {}
 
-class ForecastResponse(BaseModel):
-    id_well: str
-    data: list[ProductionPoint]
-
-
-class WellInfo(BaseModel):
-    id_well: str
-
-
-def load_models():
-    global models, features_map
-
-    client = MlflowClient()
-    model_names = ["gas_model", "pet_model"]
-
-    for model_name in model_names:
-        model_uri = f"models:/{model_name}@production"
-        models[model_name] = mlflow.sklearn.load_model(model_uri)
-
-        model_version = client.get_model_version_by_alias(
-            name=model_name,
-            alias="production",
-        )
-        run = client.get_run(model_version.run_id)
-        features_str = run.data.params["features"]
-        features = ast.literal_eval(features_str)
-
-        features_map[model_name] = features
-        print(f"Modelo {model_name} cargado con {len(features_map[model_name])} features")
-
-
-def get_well_features(id_well: str, features: list[str]) -> pd.DataFrame:
-    store = FeatureStore(repo_path=FEATURE_STORE_PATH)
-    feature_refs = [f"well_stats:{f}" for f in features]
-
-    df = store.get_online_features(
-        features=feature_refs,
-        entity_rows=[{"idpozo": int(id_well)}],
-    ).to_df()
-
-    return df
-
-
-@app.on_event("startup")
-def startup_event():
-    load_models()
-
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-
-@app.get(
-    "/api/v1/forecast",
-    response_model=ForecastResponse,
-    summary="Obtiene el pronóstico de producción de un pozo.",
-)
-def get_forecast(
-    id_well: str = Query(..., description="Identificador del pozo."),
-    date_start: date = Query(..., description="Fecha de inicio (YYYY-MM-DD)."),
-    date_end: date = Query(..., description="Fecha de fin (YYYY-MM-DD)."),
-):
-    global models, features_map
-    if date_start > date_end:
-        raise HTTPException(status_code=400, detail="date_start must be before date_end")
-
-    gas_features = features_map["gas_model"]
-    pet_features = features_map["pet_model"]
-    all_features = list(set(gas_features + pet_features + ["fecha_ts"]))
-
-    df = get_well_features(id_well, all_features)
-
-    if df.empty or df["fecha_ts"].isna().all():
-        raise HTTPException(status_code=404, detail=f"No hay features online para el pozo {id_well}")
-
-    max_fecha = pd.to_datetime(int(df["fecha_ts"].iloc[0]), unit="s").to_period("M").to_timestamp()
-
-    gas_input = df.reindex(columns=gas_features)
-    pet_input = df.reindex(columns=pet_features)
-
-    base_gas = float(models["gas_model"].predict(gas_input)[0])
-    base_pet = float(models["pet_model"].predict(pet_input)[0])
-
-    start_month = pd.to_datetime(date_start).to_period("M").to_timestamp()
-    end_month = pd.to_datetime(date_end).to_period("M").to_timestamp()
-    months = pd.date_range(start=start_month, end=end_month, freq="MS")
-
-    data = []
-    for m in months:
-        if m < max_fecha:
-            continue
-        months_ahead = (m.year - max_fecha.year) * 12 + (m.month - max_fecha.month)
-        decay = MONTHLY_DECAY ** months_ahead
-        data.append(
-            ProductionPoint(
-                date=m.strftime("%Y-%m-%d"),
-                prod_gas=base_gas * decay,
-                prod_pet=base_pet * decay,
+        for model_name in ["gas_model", "pet_model"]:
+            self.models[model_name] = mlflow.sklearn.load_model(
+                f"models:/{model_name}@production"
             )
+
+            mv = client.get_model_version_by_alias(
+                name=model_name,
+                alias="production",
+            )
+
+            self.current_versions[model_name]=str(mv.run_id)
+
+            run = client.get_run(mv.run_id)
+            self.features_map[model_name] = ast.literal_eval(
+                run.data.params["features"]
+            )
+
+    def model_version_changed(self):
+        client = MlflowClient()
+
+        for model_name in ["gas_model", "pet_model"]:
+
+            mv = client.get_model_version_by_alias(
+                name=model_name,
+                alias="production",
+            )
+
+            if str(mv.run_id) != self.current_versions[model_name]:
+                return True
+
+        return False
+
+    def maybe_reload(self):
+        now = time.time()
+
+        if now - self.last_check < self.check_interval:
+            return
+
+        self.last_check = now
+
+        if self.model_version_changed():
+            self.load_models()
+
+    def forecast(self, id_well, date_start, date_end):
+        self.maybe_reload()
+        if date_start > date_end:
+            raise HTTPException(status_code=400, detail="date_start must be before date_end")
+        
+        gas_features = self.features_map["gas_model"]
+        pet_features = self.features_map["pet_model"]
+
+        all_features = list(set(gas_features + pet_features + ["fecha_ts"]))
+        print(all_features)
+        store = FeatureStore(repo_path=str(FEATURE_STORE_PATH))
+        df = store.get_online_features(
+            features=[f"well_stats:{f}" for f in all_features],
+            entity_rows=[{"idpozo": int(id_well)}],
+        ).to_df()
+        print(df)
+
+        fecha_ts = df["fecha_ts"].iloc[0]
+        print(fecha_ts)
+        
+        if fecha_ts is None or pd.isna(fecha_ts) or df.empty:
+            raise HTTPException(status_code=404, detail=f"No hay features online para el pozo {df['idpozo'].iloc[0]}")
+
+        max_fecha = pd.to_datetime(fecha_ts, unit="s").to_period("M").to_timestamp()
+
+        gas_input = df.reindex(columns=gas_features)
+        pet_input = df.reindex(columns=pet_features)
+
+        base_gas = float(self.models["gas_model"].predict(gas_input)[0])
+        base_pet = float(self.models["pet_model"].predict(pet_input)[0])
+
+        months = pd.date_range(
+            start=pd.to_datetime(date_start).to_period("M").to_timestamp(),
+            end=pd.to_datetime(date_end).to_period("M").to_timestamp(),
+            freq="MS",
         )
 
-    return ForecastResponse(id_well=id_well, data=data)
+        data = []
+        for m in months:
+            if m < max_fecha:
+                continue
+
+            months_ahead = (m.year - max_fecha.year) * 12 + (m.month - max_fecha.month)
+            decay = MONTHLY_DECAY ** months_ahead
+
+            data.append({
+                "date": m.strftime("%Y-%m-%d"),
+                "prod_gas": base_gas * decay,
+                "prod_pet": base_pet * decay,
+            })
+
+        return {"id_well": id_well, "data": data}
+
+    def get_wells(self, date_query):
+        df = pd.read_parquet(FEATURE_STORE_PATH / "data" / "well_features.parquet")
+        fecha_ref = pd.to_datetime(date_query) - pd.DateOffset(months=1)
+        df = df[df["fecha"] > fecha_ref]
+        return [{"id_well": str(w)} for w in df["idpozo"].unique()]
+
+    def reload(self):
+        self.load_models()
 
 
-@app.get(
-    "/api/v1/wells",
-    response_model=list[WellInfo],
-    summary="Obtiene el listado de pozos.",
-    responses={
-        200: {"description": "Listado de pozos obtenido exitosamente."}
-    },
-)
-def get_wells(
-    date_query: date = Query(..., description="Fecha para la cual se hace la consulta (YYYY-MM-DD)."),
-):
-    df = pd.read_parquet(FEATURE_STORE_PATH / "data" / "well_features.parquet")
-    fecha_ref = pd.to_datetime(date_query) - pd.DateOffset(months=1)
-    df = df[df["fecha"] > fecha_ref]
-    wells = df["idpozo"].unique()
+@serve.deployment(num_replicas=3)
+@serve.ingress(app)
+class API:
+    def __init__(self):
+        self.svc = ModelService()
 
-    return [WellInfo(id_well=str(w)) for w in wells]
+    @app.get("/health")
+    async def health(self):
+        return {"status": "ok"}
+
+    @app.get("/api/v1/forecast")
+    def forecast(self, id_well: str, date_start: date, date_end: date):
+        return self.svc.forecast(id_well, date_start, date_end)
+
+    @app.get("/api/v1/wells")
+    def wells(self, date_query: date):
+        return self.svc.get_wells(date_query)
+
+    @app.post("/reload-model")
+    def reload(self):
+        self.svc.reload()
+        return {"status": "reloaded"}
 
 
-@app.post("/reload-model")
-def reload():
-    load_models()
-    return {"status": "reloaded"}
+if __name__ == "__main__":
+    ray.init(
+        include_dashboard=False,
+        _node_ip_address="0.0.0.0",
+    )
+
+    serve.start(
+        http_options={
+            "host": "0.0.0.0",
+            "port": 8000,
+        }
+    )
+
+    serve.run(API.bind())
+
+    
+    while True:
+        time.sleep(3600)
