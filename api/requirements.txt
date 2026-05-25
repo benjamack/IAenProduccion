@@ -3,4 +3,5 @@ uvicorn
 mlflow
 feast[redis]==0.54.0
 pandas==2.2.2
-scikit-learn==1.4.2
+scikit-learn==1.7.1
+ray[serve]==2.20.0
