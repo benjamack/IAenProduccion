@@ -141,6 +141,28 @@ El `/forecast` lee la `max_fecha` del pozo, predice el mes base con el modelo (m
 
 Nota: Se extendió el schema original de `/forecast` para devolver producción de gas y petróleo por separado en lugar de un único valor agregado.
 
+### 5. Drift detection + Model decay (DAG: `drift_and_decay_report`)
+
+Compara dos snapshots del feature store (`well_features_AAAAMMDD.parquet`) y reporta:
+
+- **KS Drift** (univariado): test de Kolmogorov–Smirnov por feature. Detecta cambios en la distribución marginal de cada variable. p-value < 0.05 ⇒ drift en esa feature.
+- **Classifier Drift** (multivariado): entrena un `RandomForestClassifier` para distinguir referencia vs. actual. Si AUC ≫ 0.5 con p-value < 0.05 ⇒ las distribuciones conjuntas son distinguibles. Las feature importances señalan cuál cambió más.
+- **Model decay**: re-evalúa el modelo productivo (`gas_model@production`, `pet_model@production`) sobre los datos actuales con ground truth y compara MSE/R² contra los valores loggeados en el run de entrenamiento.
+
+Los métodos se eligieron siguiendo la práctica de Clase 6: el KS es rápido pero **no detecta drift de correlación**, mientras que ClassifierDrift sí lo detecta pero es más costoso. Son complementarios.
+
+Parámetros del DAG:
+
+- `reference_snapshot`: `Earliest` (default), `Latest`, o una fecha `AAAAMMDD`.
+- `current_snapshot`: `Latest` (default), `Earliest`, o `AAAAMMDD`.
+
+Cada corrida crea un run en el experimento **`monitoring`** de MLflow con:
+
+- Métricas: `gas_ks_n_features_drifted`, `gas_ks_min_pvalue`, `gas_classifier_auc`, `gas_classifier_p_value`, `gas_mse_current`, `gas_r2_current`, `gas_mse_delta`, `gas_r2_delta` (y análogas para `pet_`).
+- Artifacts: `drift_report.html` (resumen visual con veredicto por modelo), `ks_results.csv`, `classifier_importances.csv`, histogramas y barras de importances en PNG.
+
+Veredicto por modelo en el HTML: **REVISAR MODELO** si hay drift en KS o classifier, o si `|R²_delta| > 0.1`. **OK** en caso contrario.
+
 ## Estructura
 
 ```
@@ -150,12 +172,17 @@ Nota: Se extendió el schema original de `/forecast` para devolver producción d
 │   ├── build_feature_store.py       Construcción del feature store
 │   ├── dag_ml_train.py              Training multi-experimento
 │   ├── dag_selection.py             Selección automática del mejor modelo
-│   └── dag_manual_migration.py      Promoción manual por model_id
+│   ├── dag_manual_migration.py      Promoción manual por model_id
+│   └── dag_drift_report.py          Reporte de drift + model decay
 ├── experimentos/                    Experimentos YAML (model_type + params + features + target)
 ├── feature_store/                   Repo de Feast
 │   ├── feature_store.yaml
 │   ├── features.py
 │   └── populate_store.py
+├── monitoring/                      Módulo de drift + decay
+│   ├── drift.py                     KSDrift + ClassifierDrift (alibi-detect)
+│   ├── decay.py                     Re-evaluación de modelo productivo
+│   └── report.py                    Generación de HTML + plots + CSVs
 ├── mlruns/                          Artifacts de MLflow (gitignored)
 ├── data/                            Dataset descargado (gitignored)
 └── docker-compose.yaml
