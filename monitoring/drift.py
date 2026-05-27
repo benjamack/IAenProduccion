@@ -24,7 +24,15 @@ def compute_ks_drift(
     n_drifted = 0
     p_values: list[float] = []
     for i, feat in enumerate(features):
-        d, p = ks_2samp(ref[:, i], prod[:, i])
+        ref_vals = ref[:, i]
+        prod_vals = prod[:, i]
+        ref_vals = ref_vals[~np.isnan(ref_vals)]
+        prod_vals = prod_vals[~np.isnan(prod_vals)]
+        if len(ref_vals) == 0 or len(prod_vals) == 0:
+            per_feature.append({"feature": feat, "D_KS": 0.0, "p_value": 1.0, "drift": False})
+            p_values.append(1.0)
+            continue
+        d, p = ks_2samp(ref_vals, prod_vals)
         is_feat_drift = bool(p < p_val_corrected)
         n_drifted += int(is_feat_drift)
         p_values.append(float(p))
@@ -50,8 +58,8 @@ def compute_classifier_drift(
     p_val: float = 0.05,
     n_per_class: int = 1000,
 ) -> dict:
-    ref = X_ref[features].astype(np.float32).values
-    prod = X_prod[features].astype(np.float32).values
+    ref = X_ref[features].dropna().astype(np.float32).values
+    prod = X_prod[features].dropna().astype(np.float32).values
 
     # Submuestreo para balance y velocidad (igual que con alibi-detect).
     rng = np.random.default_rng(42)

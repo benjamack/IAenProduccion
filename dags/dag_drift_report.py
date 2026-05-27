@@ -160,6 +160,7 @@ def drift_and_decay_report():
 
     gas = run_for_model.override(task_id="run_gas")("gas_model")
     pet = run_for_model.override(task_id="run_pet")("pet_model")
+    gas >> pet
     publish(gas, pet)
 
 

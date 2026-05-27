@@ -112,13 +112,13 @@ services:
     ports:
       - "9191:9090"
     volumes:
-      - ./mlflow.db:/mlflow/mlflow.db
+      - ./mlflow.db:/mlflow/mlflow_db
       - ./mlruns:/mlflow/mlruns
     command: >
-      mlflow server 
-      --backend-store-uri sqlite:///mlflow/mlflow.db 
-      --default-artifact-root /mlflow/mlruns 
-      --host 0.0.0.0 
+      mlflow server
+      --backend-store-uri sqlite:////mlflow/mlflow_db/mlflow.db
+      --default-artifact-root /mlflow/mlruns
+      --host 0.0.0.0
       --port 9090
       --allowed-hosts "*"
 
