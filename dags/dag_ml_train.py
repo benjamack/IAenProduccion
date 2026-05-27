@@ -3,15 +3,31 @@ from airflow.sdk import get_current_context
 from datetime import datetime
 from pathlib import Path
 import yaml
+import re
 
 DATA_PATH = Path("/opt/airflow/feature_store/data/well_features.parquet")
 EXP_PATH = Path("/opt/airflow/experimentos")
+SNAPSHOT_RE = re.compile(r"^well_features_(\d{8})\.parquet$")
 
+def _latest_snapshot():
+    snapshots = []
+
+    for p in DATA_PATH.parent.glob("well_features_*.parquet"):
+        m = SNAPSHOT_RE.match(p.name)
+
+        if m:
+            snapshots.append(m.group(1))
+
+    if not snapshots:
+        return None
+
+    return max(snapshots)
 
 @dag(
     dag_id='ml_training_pipeline',
     description='Pipeline de entrenamiento de modelos con Airflow',
     start_date=datetime(2026, 1, 1),
+    is_paused_upon_creation=False,
     params={
         "experiment_name": "Airflow-MLflow",
         "fecha_data": "Ultima(Default)"
@@ -53,6 +69,7 @@ def ml_training_pipeline():
 
         if fecha_data == "Ultima(Default)":
             data = pd.read_parquet(DATA_PATH)
+            fecha_data=_latest_snapshot()
         else:
             data_especifica = DATA_PATH.parent / f"{DATA_PATH.stem}_{fecha_data}{DATA_PATH.suffix}"
             data = pd.read_parquet(data_especifica)

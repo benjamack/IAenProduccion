@@ -3,9 +3,25 @@ from airflow.sdk import get_current_context
 from datetime import datetime
 from pathlib import Path
 import yaml
+import re
 
 DATA_PATH = Path("/opt/airflow/feature_store/data/well_features.parquet")
 EXP_PATH = Path("/opt/airflow/experimentos")
+SNAPSHOT_RE = re.compile(r"^well_features_(\d{8})\.parquet$")
+
+def _latest_snapshot():
+    snapshots = []
+
+    for p in DATA_PATH.parent.glob("well_features_*.parquet"):
+        m = SNAPSHOT_RE.match(p.name)
+
+        if m:
+            snapshots.append(m.group(1))
+
+    if not snapshots:
+        return None
+
+    return max(snapshots)
 
 
 @dag(
@@ -59,6 +75,7 @@ def Automatic_training_pet():
 
         if fecha_data == "Ultima(Default)":
             data = pd.read_parquet(DATA_PATH)
+            fecha_data=_latest_snapshot()
         else:
             data_especifica = DATA_PATH.parent / f"{DATA_PATH.stem}_{fecha_data}{DATA_PATH.suffix}"
             data = pd.read_parquet(data_especifica)
@@ -101,6 +118,8 @@ def Automatic_training_pet():
 
             for k, v in params.items():
                 mlflow.log_param(k, v)
+        
+        return "listo" 
 
 
     @task
@@ -172,8 +191,9 @@ def Automatic_training_pet():
         )
 
     experiments = get_experiments()
-    train_model.expand(experiment=experiments)
+    trained_models=train_model.expand(experiment=experiments)
     best_model = select_best_model()
+    trained_models >> best_model
     register_and_promote(best_model)
 
 

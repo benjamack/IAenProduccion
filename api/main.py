@@ -158,10 +158,6 @@ class API:
     def wells(self, date_query: date):
         return self.svc.get_wells(date_query)
 
-    @app.post("/reload-model")
-    def reload(self):
-        self.svc.reload()
-        return {"status": "reloaded"}
 
 
 if __name__ == "__main__":
