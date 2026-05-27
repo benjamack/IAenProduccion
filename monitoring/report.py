@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import io
 from datetime import datetime
 from pathlib import Path
 
@@ -13,13 +15,20 @@ PAL_REF = "#4878CF"
 PAL_PROD = "#D65F5F"
 
 
+def _fig_to_b64(fig) -> str:
+    buf = io.BytesIO()
+    fig.savefig(buf, dpi=110, bbox_inches="tight", format="png")
+    buf.seek(0)
+    return base64.b64encode(buf.read()).decode()
+
+
 def _plot_feature_hists(
     df_ref: pd.DataFrame,
     df_prod: pd.DataFrame,
     features: list[str],
     out_path: Path,
     title: str,
-) -> None:
+) -> str:
     n = len(features)
     cols = min(3, n)
     rows = (n + cols - 1) // cols
@@ -36,11 +45,13 @@ def _plot_feature_hists(
         ax.set_visible(False)
     fig.suptitle(title, fontsize=12, fontweight="bold")
     plt.tight_layout()
+    b64 = _fig_to_b64(fig)
     fig.savefig(out_path, dpi=110, bbox_inches="tight")
     plt.close(fig)
+    return b64
 
 
-def _plot_importances(importances: dict, out_path: Path, title: str) -> None:
+def _plot_importances(importances: dict, out_path: Path, title: str) -> str:
     items = sorted(importances.items(), key=lambda x: x[1])
     feats, vals = zip(*items)
     fig, ax = plt.subplots(figsize=(7, max(3, 0.35 * len(feats))))
@@ -51,8 +62,10 @@ def _plot_importances(importances: dict, out_path: Path, title: str) -> None:
     ax.set_xlabel("Importancia (RandomForest ref-vs-prod)")
     ax.set_title(title, fontweight="bold", fontsize=11)
     plt.tight_layout()
+    b64 = _fig_to_b64(fig)
     fig.savefig(out_path, dpi=110, bbox_inches="tight")
     plt.close(fig)
+    return b64
 
 
 def _ks_table_html(per_feature: list[dict]) -> str:
@@ -75,13 +88,14 @@ def _ks_table_html(per_feature: list[dict]) -> str:
 
 def _decay_table_html(decay: dict) -> str:
     return (
-        "<table><thead><tr><th>Métrica</th><th>Entrenamiento</th>"
+        "<table><thead><tr><th>Métrica</th><th>Referencia</th>"
         "<th>Actual</th><th>Δ</th></tr></thead><tbody>"
-        f"<tr><td>MSE</td><td>{decay['mse_train']:.4f}</td>"
+        f"<tr><td>MSE</td><td>{decay['mse_ref']:.4f}</td>"
         f"<td>{decay['mse_current']:.4f}</td><td>{decay['mse_delta']:+.4f}</td></tr>"
-        f"<tr><td>R²</td><td>{decay['r2_train']:.4f}</td>"
+        f"<tr><td>R²</td><td>{decay['r2_ref']:.4f}</td>"
         f"<td>{decay['r2_current']:.4f}</td><td>{decay['r2_delta']:+.4f}</td></tr>"
-        f"<tr><td>n_samples</td><td colspan='3'>{decay['n_samples']}</td></tr>"
+        f"<tr><td>n_samples</td><td>{decay['n_samples_ref']}</td>"
+        f"<td>{decay['n_samples_current']}</td><td></td></tr>"
         "</tbody></table>"
     )
 
@@ -91,16 +105,32 @@ def _model_section(
     ks: dict,
     clf: dict,
     decay: dict,
-    hist_img: str,
-    importances_img: str,
+    hist_b64: str,
+    importances_b64: str,
 ) -> str:
-    verdict_drift = ks["is_drift"] or clf["is_drift"]
+    verdict_ks = ks["is_drift"]
+    verdict_clf = clf["is_drift"]
     verdict_decay = abs(decay["r2_delta"]) > 0.1
-    verdict = (
-        "<span class='bad'>REVISAR MODELO</span>"
-        if verdict_drift or verdict_decay
-        else "<span class='good'>OK</span>"
-    )
+
+    reasons = []
+    if verdict_ks:
+        reasons.append(f"KS drift en {ks['n_drifted']} features")
+    if verdict_clf:
+        reasons.append(f"Classifier drift (AUC={clf['auc']:.3f})")
+    if verdict_decay:
+        reasons.append(f"decay alto (Δr²={decay['r2_delta']:+.3f})")
+
+    if reasons:
+        verdict = (
+            f"<span class='bad'>REVISAR MODELO</span> "
+            f"<span class='bad-reason'>— {', '.join(reasons)}</span>"
+        )
+    else:
+        verdict = "<span class='good'>OK</span>"
+
+    hist_uri = f"data:image/png;base64,{hist_b64}"
+    imp_uri = f"data:image/png;base64,{importances_b64}"
+
     return f"""
     <section>
       <h2>{model_label} <small>(target={decay['target']})</small> &mdash; {verdict}</h2>
@@ -114,13 +144,14 @@ def _model_section(
       <p>AUC del clasificador ref-vs-actual: <b>{clf['auc']:.4f}</b>
          (p-value <b>{clf['p_value']:.4f}</b>).
          {"<b class='bad'>DRIFT DETECTADO</b>" if clf['is_drift'] else "<b class='good'>Sin drift</b>"}.</p>
-      <img src="{importances_img}" alt="Feature importances {model_label}">
+      <img src="{imp_uri}" alt="Feature importances {model_label}">
 
       <h3>Model decay</h3>
+      <p><small>Referencia = modelo evaluado sobre el snapshot de entrenamiento. Actual = mismo modelo sobre snapshot actual.</small></p>
       {_decay_table_html(decay)}
 
       <h3>Distribuciones por feature</h3>
-      <img src="{hist_img}" alt="Histogramas {model_label}">
+      <img src="{hist_uri}" alt="Histogramas {model_label}">
     </section>
     """
 
@@ -139,6 +170,7 @@ tr.ok td { background: #eaf6ea; }
 img { max-width: 100%; margin: 0.6em 0; border: 1px solid #eee; }
 .good { color: #1f7a3a; font-weight: bold; }
 .bad { color: #b22222; font-weight: bold; }
+.bad-reason { color: #b22222; font-weight: normal; font-size: 0.9em; }
 small { color: #666; font-weight: normal; }
 .meta { color: #555; font-size: 0.9em; }
 </style></head><body>
@@ -154,31 +186,29 @@ def generate_report(
     cur_snapshot: str,
     output_dir: Path,
 ) -> Path:
-    """Genera el reporte HTML + plots + CSVs en output_dir.
+    """Genera el reporte HTML autocontenido (imágenes embebidas como base64) + CSVs.
 
     `gas_results` y `pet_results` esperan keys: `ks`, `clf`, `decay`, `features`, `ref_date`.
-    Cada modelo puede tener un snapshot de referencia distinto (el del entrenamiento).
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Plots por modelo (cada uno contra su propio snapshot de referencia)
-    _plot_feature_hists(
+    hist_gas_b64 = _plot_feature_hists(
         df_ref_gas, df_cur, gas_results["features"],
         output_dir / "hist_gas.png",
         "gas_model: distribuciones referencia vs actual",
     )
-    _plot_importances(
+    imp_gas_b64 = _plot_importances(
         gas_results["clf"]["importances"],
         output_dir / "importances_gas.png",
         "gas_model: importancia del clasificador ref-vs-actual",
     )
-    _plot_feature_hists(
+    hist_pet_b64 = _plot_feature_hists(
         df_ref_pet, df_cur, pet_results["features"],
         output_dir / "hist_pet.png",
         "pet_model: distribuciones referencia vs actual",
     )
-    _plot_importances(
+    imp_pet_b64 = _plot_importances(
         pet_results["clf"]["importances"],
         output_dir / "importances_pet.png",
         "pet_model: importancia del clasificador ref-vs-actual",
@@ -195,14 +225,12 @@ def generate_report(
     for label, res in [("gas_model", gas_results), ("pet_model", pet_results)]:
         for feat, imp in res["clf"]["importances"].items():
             imp_rows.append({"model": label, "feature": feat, "importance": imp})
-    pd.DataFrame(imp_rows).to_csv(
-        output_dir / "classifier_importances.csv", index=False,
-    )
+    pd.DataFrame(imp_rows).to_csv(output_dir / "classifier_importances.csv", index=False)
 
-    # HTML
+    # HTML autocontenido
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     html = HTML_HEAD
-    html += f"<h1>Drift &amp; Decay Report</h1>"
+    html += "<h1>Drift &amp; Decay Report</h1>"
     html += (
         "<p class='meta'>"
         f"Referencia gas: <b>{gas_results['ref_date']}</b> &mdash; "
@@ -214,12 +242,12 @@ def generate_report(
     html += _model_section(
         "gas_model",
         gas_results["ks"], gas_results["clf"], gas_results["decay"],
-        "hist_gas.png", "importances_gas.png",
+        hist_gas_b64, imp_gas_b64,
     )
     html += _model_section(
         "pet_model",
         pet_results["ks"], pet_results["clf"], pet_results["decay"],
-        "hist_pet.png", "importances_pet.png",
+        hist_pet_b64, imp_pet_b64,
     )
     html += "</body></html>"
 

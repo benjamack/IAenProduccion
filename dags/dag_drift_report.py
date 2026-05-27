@@ -87,7 +87,7 @@ def drift_and_decay_report():
 
         ks = compute_ks_drift(df_ref, df_cur, features)
         clf = compute_classifier_drift(df_ref, df_cur, features)
-        decay = compute_model_decay(model_name, df_cur)
+        decay = compute_model_decay(model_name, df_ref, df_cur)
 
         return {
             "model_name": model_name,
@@ -146,13 +146,14 @@ def drift_and_decay_report():
                     mlflow.log_metric(f"{label}_classifier_auc", res["clf"]["auc"])
                     mlflow.log_metric(f"{label}_classifier_p_value", res["clf"]["p_value"])
                     mlflow.log_metric(f"{label}_classifier_drift", int(res["clf"]["is_drift"]))
+                    mlflow.log_metric(f"{label}_mse_ref", res["decay"]["mse_ref"])
+                    mlflow.log_metric(f"{label}_r2_ref", res["decay"]["r2_ref"])
                     mlflow.log_metric(f"{label}_mse_current", res["decay"]["mse_current"])
                     mlflow.log_metric(f"{label}_r2_current", res["decay"]["r2_current"])
-                    mlflow.log_metric(f"{label}_mse_train", res["decay"]["mse_train"])
-                    mlflow.log_metric(f"{label}_r2_train", res["decay"]["r2_train"])
                     mlflow.log_metric(f"{label}_mse_delta", res["decay"]["mse_delta"])
                     mlflow.log_metric(f"{label}_r2_delta", res["decay"]["r2_delta"])
-                    mlflow.log_metric(f"{label}_decay_n_samples", res["decay"]["n_samples"])
+                    mlflow.log_metric(f"{label}_decay_n_samples_ref", res["decay"]["n_samples_ref"])
+                    mlflow.log_metric(f"{label}_decay_n_samples_current", res["decay"]["n_samples_current"])
 
                 mlflow.log_artifacts(str(out_dir))
 

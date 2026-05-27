@@ -10,11 +10,7 @@ from sklearn.metrics import mean_squared_error, r2_score
 
 
 def load_production_run(model_name: str):
-    """Devuelve (run, features, target) del modelo en producción.
-
-    Replica el patrón de api/main.py: encuentra la versión con alias
-    `production`, recupera el run y parsea los params `features` y `target`.
-    """
+    """Devuelve (run, features, target, mv, fecha_de_data) del modelo en producción."""
     client = MlflowClient()
     mv = client.get_model_version_by_alias(name=model_name, alias="production")
     run = client.get_run(mv.run_id)
@@ -24,32 +20,42 @@ def load_production_run(model_name: str):
     return run, features, target, mv, fecha_de_data
 
 
-def compute_model_decay(model_name: str, df_current: pd.DataFrame) -> dict:
-    """Re-evalúa el modelo productivo sobre df_current y compara contra training."""
-    run, features, target, _mv, _fecha = load_production_run(model_name)
+def compute_model_decay(
+    model_name: str,
+    df_ref: pd.DataFrame,
+    df_current: pd.DataFrame,
+) -> dict:
+    """Compara performance del modelo en df_ref (baseline) vs df_current.
 
-    # Las inference_rows del feature store tienen target=None: las descartamos.
+    Ambas evaluaciones usan la misma metodología (dropna de features+target),
+    así que el delta mide decay real, no diferencias de dataset.
+    """
+    _run, features, target, _mv, _fecha = load_production_run(model_name)
+
     cols = features + [target]
-    df_eval = df_current[cols].dropna()
-
     model = mlflow.sklearn.load_model(f"models:/{model_name}@production")
-    y_true = df_eval[target].values
-    y_pred = model.predict(df_eval[features])
 
-    mse_current = float(mean_squared_error(y_true, y_pred))
-    r2_current = float(r2_score(y_true, y_pred))
+    df_ref_eval = df_ref[cols].dropna()
+    y_ref_true = df_ref_eval[target].values
+    y_ref_pred = model.predict(df_ref_eval[features])
+    mse_ref = float(mean_squared_error(y_ref_true, y_ref_pred))
+    r2_ref = float(r2_score(y_ref_true, y_ref_pred))
 
-    mse_train = float(run.data.metrics.get("mse", float("nan")))
-    r2_train = float(run.data.metrics.get("r2", float("nan")))
+    df_cur_eval = df_current[cols].dropna()
+    y_cur_true = df_cur_eval[target].values
+    y_cur_pred = model.predict(df_cur_eval[features])
+    mse_current = float(mean_squared_error(y_cur_true, y_cur_pred))
+    r2_current = float(r2_score(y_cur_true, y_cur_pred))
 
     return {
         "model_name": model_name,
         "target": target,
-        "n_samples": int(len(df_eval)),
+        "n_samples_ref": int(len(df_ref_eval)),
+        "n_samples_current": int(len(df_cur_eval)),
+        "mse_ref": mse_ref,
+        "r2_ref": r2_ref,
         "mse_current": mse_current,
         "r2_current": r2_current,
-        "mse_train": mse_train,
-        "r2_train": r2_train,
-        "mse_delta": mse_current - mse_train,
-        "r2_delta": r2_current - r2_train,
+        "mse_delta": mse_current - mse_ref,
+        "r2_delta": r2_current - r2_ref,
     }
