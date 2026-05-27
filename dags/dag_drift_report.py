@@ -34,11 +34,12 @@ def _resolve_one(spec: str, snaps: list[tuple[str, Path]], position: str) -> tup
         raise FileNotFoundError(
             f"No hay snapshots en {FEATURE_STORE_DATA}. Corré build_feature_store primero."
         )
-    if spec == "Latest":
+    if spec in ("Latest", "Ultima(Default)"):
         date, path = snaps[-1]
     elif spec == "Earliest":
         date, path = snaps[0]
     else:
+        spec = str(spec).strip()
         match = [s for s in snaps if s[0] == spec]
         if not match:
             raise FileNotFoundError(
@@ -52,14 +53,14 @@ def _resolve_one(spec: str, snaps: list[tuple[str, Path]], position: str) -> tup
     dag_id="drift_and_decay_report",
     description=(
         "Reporta data drift (KS + Classifier) y model decay (MSE/R²) "
-        "para gas_model y pet_model. Sube métricas y artifacts a MLflow "
-        "bajo el experimento `monitoring`."
+        "para gas_model y pet_model. La referencia se toma automáticamente "
+        "del snapshot con que se entrenó cada modelo (fecha_de_data en MLflow). "
+        "Sube métricas y artifacts al experimento `monitoring` de MLflow."
     ),
     start_date=datetime(2026, 1, 1),
     schedule=None,
     catchup=False,
     params={
-        "reference_snapshot": "Earliest",
         "current_snapshot": "Latest",
     },
     tags=["monitoring", "drift", "decay"],
@@ -67,31 +68,22 @@ def _resolve_one(spec: str, snaps: list[tuple[str, Path]], position: str) -> tup
 def drift_and_decay_report():
 
     @task
-    def resolve_snapshots() -> dict:
-        context = get_current_context()
-        ref_spec = context["params"]["reference_snapshot"]
-        cur_spec = context["params"]["current_snapshot"]
-        snaps = _list_snapshots()
-        ref_date, ref_path = _resolve_one(ref_spec, snaps, "reference")
-        cur_date, cur_path = _resolve_one(cur_spec, snaps, "current")
-        return {
-            "ref_date": ref_date,
-            "ref_path": ref_path,
-            "cur_date": cur_date,
-            "cur_path": cur_path,
-        }
-
-    @task
-    def run_for_model(model_name: str, snapshots: dict) -> dict:
+    def run_for_model(model_name: str) -> dict:
         import pandas as pd
 
         from decay import compute_model_decay, load_production_run
         from drift import compute_classifier_drift, compute_ks_drift
 
-        df_ref = pd.read_parquet(snapshots["ref_path"])
-        df_cur = pd.read_parquet(snapshots["cur_path"])
+        context = get_current_context()
+        snaps = _list_snapshots()
 
-        _run, features, target, _mv = load_production_run(model_name)
+        cur_spec = context["params"]["current_snapshot"]
+        cur_date, cur_path = _resolve_one(cur_spec, snaps, "current")
+        df_cur = pd.read_parquet(cur_path)
+
+        _run, features, target, _mv, fecha_de_data = load_production_run(model_name)
+        ref_date, ref_path = _resolve_one(fecha_de_data, snaps, "reference")
+        df_ref = pd.read_parquet(ref_path)
 
         ks = compute_ks_drift(df_ref, df_cur, features)
         clf = compute_classifier_drift(df_ref, df_cur, features)
@@ -104,35 +96,48 @@ def drift_and_decay_report():
             "ks": ks,
             "clf": clf,
             "decay": decay,
+            "ref_date": ref_date,
+            "cur_date": cur_date,
         }
 
     @task
-    def publish(gas_results: dict, pet_results: dict, snapshots: dict) -> str:
+    def publish(gas_results: dict, pet_results: dict) -> str:
         import mlflow
         import pandas as pd
 
         from report import generate_report
 
-        df_ref = pd.read_parquet(snapshots["ref_path"])
-        df_cur = pd.read_parquet(snapshots["cur_path"])
+        snaps = _list_snapshots()
+        _, gas_ref_path = _resolve_one(gas_results["ref_date"], snaps, "reference")
+        _, pet_ref_path = _resolve_one(pet_results["ref_date"], snaps, "reference")
+        _, cur_path = _resolve_one(gas_results["cur_date"], snaps, "current")
+
+        df_ref_gas = pd.read_parquet(gas_ref_path)
+        df_ref_pet = pd.read_parquet(pet_ref_path)
+        df_cur = pd.read_parquet(cur_path)
 
         with tempfile.TemporaryDirectory() as tmp:
             out_dir = Path(tmp)
             report_path = generate_report(
-                df_ref=df_ref,
+                df_ref_gas=df_ref_gas,
+                df_ref_pet=df_ref_pet,
                 df_cur=df_cur,
                 gas_results=gas_results,
                 pet_results=pet_results,
-                ref_snapshot=snapshots["ref_date"],
-                cur_snapshot=snapshots["cur_date"],
+                cur_snapshot=gas_results["cur_date"],
                 output_dir=out_dir,
             )
 
             mlflow.set_experiment("monitoring")
-            run_name = f"drift_{snapshots['ref_date']}_vs_{snapshots['cur_date']}"
+            run_name = (
+                f"drift_gas{gas_results['ref_date']}"
+                f"_pet{pet_results['ref_date']}"
+                f"_vs_{gas_results['cur_date']}"
+            )
             with mlflow.start_run(run_name=run_name) as run:
-                mlflow.log_param("reference_snapshot", snapshots["ref_date"])
-                mlflow.log_param("current_snapshot", snapshots["cur_date"])
+                mlflow.log_param("current_snapshot", gas_results["cur_date"])
+                mlflow.log_param("gas_ref_snapshot", gas_results["ref_date"])
+                mlflow.log_param("pet_ref_snapshot", pet_results["ref_date"])
 
                 for label, res in [("gas", gas_results), ("pet", pet_results)]:
                     mlflow.log_param(f"{label}_target", res["target"])
@@ -153,10 +158,10 @@ def drift_and_decay_report():
 
                 return f"mlflow run {run.info.run_id}: {report_path.name}"
 
-    snapshots = resolve_snapshots()
-    gas = run_for_model.override(task_id="run_gas")("gas_model", snapshots)
-    pet = run_for_model.override(task_id="run_pet")("pet_model", snapshots)
-    publish(gas, pet, snapshots)
+    gas = run_for_model.override(task_id="run_gas")("gas_model")
+    pet = run_for_model.override(task_id="run_pet")("pet_model")
+    gas >> pet
+    publish(gas, pet)
 
 
 drift_and_decay_report()

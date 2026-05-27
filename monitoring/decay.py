@@ -20,12 +20,13 @@ def load_production_run(model_name: str):
     run = client.get_run(mv.run_id)
     features = ast.literal_eval(run.data.params["features"])
     target = run.data.params["target"]
-    return run, features, target, mv
+    fecha_de_data = run.data.params.get("fecha_de_data", "Ultima(Default)")
+    return run, features, target, mv, fecha_de_data
 
 
 def compute_model_decay(model_name: str, df_current: pd.DataFrame) -> dict:
     """Re-evalúa el modelo productivo sobre df_current y compara contra training."""
-    run, features, target, _mv = load_production_run(model_name)
+    run, features, target, _mv, _fecha = load_production_run(model_name)
 
     # Las inference_rows del feature store tienen target=None: las descartamos.
     cols = features + [target]

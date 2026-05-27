@@ -21,7 +21,6 @@ if FEATURE_STORE_PATH not in sys.path:
     start_date=datetime(2026, 1, 1),
     schedule="5 0 1 * *",
     is_paused_upon_creation=False,
-    schedule=None,
     catchup=False,
     tags=["feature_store", "feast", "oil_gas_production"],
 )
