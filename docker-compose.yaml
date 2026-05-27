@@ -125,6 +125,8 @@ services:
   api:
     build: ./api
     container_name: iaenproduccion-api
+    user: "${AIRFLOW_UID:-1000}:0"
+    
     ports:
       - "8000:8000"
     environment:
