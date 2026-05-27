@@ -146,24 +146,25 @@ small { color: #666; font-weight: normal; }
 
 
 def generate_report(
-    df_ref: pd.DataFrame,
+    df_ref_gas: pd.DataFrame,
+    df_ref_pet: pd.DataFrame,
     df_cur: pd.DataFrame,
     gas_results: dict,
     pet_results: dict,
-    ref_snapshot: str,
     cur_snapshot: str,
     output_dir: Path,
 ) -> Path:
     """Genera el reporte HTML + plots + CSVs en output_dir.
 
-    `gas_results` y `pet_results` esperan keys: `ks`, `clf`, `decay`, `features`.
+    `gas_results` y `pet_results` esperan keys: `ks`, `clf`, `decay`, `features`, `ref_date`.
+    Cada modelo puede tener un snapshot de referencia distinto (el del entrenamiento).
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Plots por modelo
+    # Plots por modelo (cada uno contra su propio snapshot de referencia)
     _plot_feature_hists(
-        df_ref, df_cur, gas_results["features"],
+        df_ref_gas, df_cur, gas_results["features"],
         output_dir / "hist_gas.png",
         "gas_model: distribuciones referencia vs actual",
     )
@@ -173,7 +174,7 @@ def generate_report(
         "gas_model: importancia del clasificador ref-vs-actual",
     )
     _plot_feature_hists(
-        df_ref, df_cur, pet_results["features"],
+        df_ref_pet, df_cur, pet_results["features"],
         output_dir / "hist_pet.png",
         "pet_model: distribuciones referencia vs actual",
     )
@@ -204,7 +205,8 @@ def generate_report(
     html += f"<h1>Drift &amp; Decay Report</h1>"
     html += (
         "<p class='meta'>"
-        f"Referencia: <b>{ref_snapshot}</b> &mdash; "
+        f"Referencia gas: <b>{gas_results['ref_date']}</b> &mdash; "
+        f"Referencia pet: <b>{pet_results['ref_date']}</b> &mdash; "
         f"Actual: <b>{cur_snapshot}</b> &mdash; "
         f"Generado: {now}"
         "</p>"

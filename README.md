@@ -12,6 +12,7 @@ Trabajo final de la materia **IA en Producción** (Maestría en IA, UdeSA 2026).
 | Experiment tracking + Model Registry | MLflow 3.10.1 |
 | Feature store | Feast 0.54 (Redis online, Parquet offline) |
 | API de inferencia | FastAPI |
+| Escalabilidad de inferencia | Ray Serve 2.20 |
 | Containerización | Docker Compose |
 
 ## Levantar el sistema
@@ -124,9 +125,17 @@ Por eso, el DAG `model_manual_migration` permite:
 - definir manualmente el `registered_model_name`,
 - y tener control total sobre qué modelo pasa a producción.
 
-### 4. API de inferencia
+### 4. API de inferencia (FastAPI + Ray Serve)
 
 FastAPI levanta al arranque cargando `gas_model@production` y `pet_model@production` desde MLflow, con sus listas de features guardadas como params del run.
+
+#### Escalabilidad con Ray Serve
+
+La API corre sobre **Ray Serve** para soportar múltiples requests concurrentes sin recargar el modelo en cada llamada. El deployment se configura con `@serve.deployment(num_replicas=3)`, lo que levanta tres réplicas del servicio con el modelo ya cargado en memoria. Esto es especialmente relevante para modelos como Random Forest, donde el tiempo de carga es significativo comparado con el de predicción. Ray distribuye el tráfico entre las réplicas automáticamente.
+
+#### Hot reload de modelos
+
+Cada 60 segundos la API chequea si cambió la versión `production` en el registro de MLflow (`model_version_changed()`). Si detecta un cambio (por ejemplo, tras una corrida del pipeline automático), recarga el modelo sin reiniciar el container. También se expone el endpoint `POST /reload-model` para forzar el reload manualmente.
 
 Endpoints:
 
@@ -141,9 +150,19 @@ El `/forecast` lee la `max_fecha` del pozo, predice el mes base con el modelo (m
 
 Nota: Se extendió el schema original de `/forecast` para devolver producción de gas y petróleo por separado en lugar de un único valor agregado.
 
-### 5. Drift detection + Model decay (DAG: `drift_and_decay_report`)
+### 5. Auto-train y deploy (DAGs: `Automatic_training_gas`, `Automatic_training_pet`)
 
-Compara dos snapshots del feature store (`well_features_AAAAMMDD.parquet`) y reporta:
+Estos DAGs corren automáticamente el día 2 de cada mes (`schedule: 5 0 2 * *`, `is_paused_upon_creation=True`). Cada uno integra en un único pipeline el ciclo completo para su modelo:
+
+**Tasks:** `get_experiments` → `train_model` (expand por experimento, paralelo) → `select_best_model` → `register_and_promote`
+
+El `train_model` itera sobre todos los experimentos definidos en el YAML correspondiente (`Experimento_gas_auto.yaml` / `Experimento_pet_auto.yaml`), loggea a MLflow y registra métricas. El `select_best_model` busca el mejor run según `decision_metric` (default: `mse`, `ASC`) y lo pasa a `register_and_promote`, que crea la versión en el Model Registry y setea el alias `production`.
+
+Esto cierra el loop de reentrenamiento: cada mes se construye el feature store → se entrena → el mejor modelo queda como `production` → la API lo recarga automáticamente.
+
+### 6. Drift detection + Model decay (DAG: `drift_and_decay_report`)
+
+Compara el snapshot actual del feature store contra el snapshot con el que se entrenó cada modelo y reporta:
 
 - **KS Drift** (univariado): test de Kolmogorov–Smirnov por feature. Detecta cambios en la distribución marginal de cada variable. p-value < 0.05 ⇒ drift en esa feature.
 - **Classifier Drift** (multivariado): entrena un `RandomForestClassifier` para distinguir referencia vs. actual. Si AUC ≫ 0.5 con p-value < 0.05 ⇒ las distribuciones conjuntas son distinguibles. Las feature importances señalan cuál cambió más.
@@ -151,10 +170,11 @@ Compara dos snapshots del feature store (`well_features_AAAAMMDD.parquet`) y rep
 
 Los métodos se eligieron siguiendo la práctica de Clase 6: el KS es rápido pero **no detecta drift de correlación**, mientras que ClassifierDrift sí lo detecta pero es más costoso. Son complementarios.
 
-Parámetros del DAG:
+La referencia de cada modelo se obtiene automáticamente del param `fecha_de_data` guardado en MLflow al momento del entrenamiento — no hace falta indicarla manualmente.
 
-- `reference_snapshot`: `Earliest` (default), `Latest`, o una fecha `AAAAMMDD`.
-- `current_snapshot`: `Latest` (default), `Earliest`, o `AAAAMMDD`.
+Parámetro del DAG:
+
+- `current_snapshot`: `Latest` (default), o una fecha `AAAAMMDD`.
 
 Cada corrida crea un run en el experimento **`monitoring`** de MLflow con:
 
@@ -173,6 +193,8 @@ Veredicto por modelo en el HTML: **REVISAR MODELO** si hay drift en KS o classif
 │   ├── dag_ml_train.py              Training multi-experimento
 │   ├── dag_selection.py             Selección automática del mejor modelo
 │   ├── dag_manual_migration.py      Promoción manual por model_id
+│   ├── dag_gas_auto.py              Auto-train + deploy mensual para gas_model
+│   ├── dag_pet_auto.py              Auto-train + deploy mensual para pet_model
 │   └── dag_drift_report.py          Reporte de drift + model decay
 ├── experimentos/                    Experimentos YAML (model_type + params + features + target)
 ├── feature_store/                   Repo de Feast
@@ -180,7 +202,7 @@ Veredicto por modelo en el HTML: **REVISAR MODELO** si hay drift en KS o classif
 │   ├── features.py
 │   └── populate_store.py
 ├── monitoring/                      Módulo de drift + decay
-│   ├── drift.py                     KSDrift + ClassifierDrift (alibi-detect)
+│   ├── drift.py                     KSDrift + ClassifierDrift (scipy + sklearn)
 │   ├── decay.py                     Re-evaluación de modelo productivo
 │   └── report.py                    Generación de HTML + plots + CSVs
 ├── mlruns/                          Artifacts de MLflow (gitignored)

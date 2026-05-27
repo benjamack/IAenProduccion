@@ -1,48 +1,31 @@
-# Licensed to the Apache Software Foundation (ASF) under one
-# or more contributor license agreements.  See the NOTICE file
-# distributed with this work for additional information
-# regarding copyright ownership.  The ASF licenses this file
-# to you under the Apache License, Version 2.0 (the
-# "License"); you may not use this file except in compliance
-# with the License.  You may obtain a copy of the License at
+# Oil & Gas Forecast — IA en Producción (UdeSA 2026)
+# Stack: Airflow 3.0.6 (CeleryExecutor) + MLflow + Feast + FastAPI + Ray Serve
 #
-#   http://www.apache.org/licenses/LICENSE-2.0
+# Levantar:  docker compose up -d
+# Bajar:     docker compose down
 #
-# Unless required by applicable law or agreed to in writing,
-# software distributed under the License is distributed on an
-# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied.  See the License for the
-# specific language governing permissions and limitations
-# under the License.
+# Servicios expuestos:
+#   Airflow UI   → http://localhost:8181  (usuario/contraseña: airflow/airflow)
+#   MLflow UI    → http://localhost:9191
+#   API          → http://localhost:8000  (docs en /docs)
 #
-
-# Basic Airflow cluster configuration for CeleryExecutor with Redis and PostgreSQL.
+# Variables configurables en .env:
+#   AIRFLOW_UID                   UID del proceso dentro de los containers (default 1000)
+#   AIRFLOW_IMAGE_NAME            Imagen de Airflow (fijada en apache/airflow:3.0.6)
+#   _PIP_ADDITIONAL_REQUIREMENTS  Librerías extra instaladas al arrancar cada container
+#   _AIRFLOW_WWW_USER_USERNAME    Usuario de la UI (default airflow)
+#   _AIRFLOW_WWW_USER_PASSWORD    Contraseña de la UI (default airflow)
 #
-# WARNING: This configuration is for local development. Do not use it in a production deployment.
-#
-# This configuration supports basic configuration using environment variables or an .env file
-# The following variables are supported:
-#
-# AIRFLOW_IMAGE_NAME           - Docker image name used to run Airflow.
-#                                Default: apache/airflow:3.1.7
-# AIRFLOW_UID                  - User ID in Airflow containers
-#                                Default: 50000
-# AIRFLOW_PROJ_DIR             - Base path to which all the files will be volumed.
-#                                Default: .
-# Those configurations are useful mostly in case of standalone testing/running Airflow in test/try-out mode
-#
-# _AIRFLOW_WWW_USER_USERNAME   - Username for the administrator account (if requested).
-#                                Default: airflow
-# _AIRFLOW_WWW_USER_PASSWORD   - Password for the administrator account (if requested).
-#                                Default: airflow
-# _PIP_ADDITIONAL_REQUIREMENTS - Additional PIP requirements to add when starting all containers.
-#                                Use this option ONLY for quick checks. Installing requirements at container
-#                                startup is done EVERY TIME the service is started.
-#                                A better way is to build a custom image or extend the official image
-#                                as described in https://airflow.apache.org/docs/docker-stack/build.html.
-#                                Default: ''
-#
-# Feel free to modify this file to suit your needs.
+# Componentes:
+#   postgres          Base de datos de Airflow (puerto interno 5432)
+#   redis             Broker de Celery + online store de Feast (puerto interno 6379)
+#   mlflow            Tracking server con SQLite backend y mlruns/ como artifact store
+#   api               FastAPI + Ray Serve — carga gas_model@production y pet_model@production
+#   airflow-apiserver API REST + UI de Airflow
+#   airflow-scheduler Scheduler de DAGs
+#   airflow-dag-processor Parseo de archivos DAG
+#   airflow-worker    Worker de Celery — ejecuta las tasks de los DAGs
+#   airflow-triggerer Triggerer para tareas deferibles
 ---
 x-airflow-common:
   &airflow-common
