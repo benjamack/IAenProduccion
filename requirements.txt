@@ -1,7 +1,0 @@
-pandas
-scikit-learn
-mlflow
-feast==0.42.0
-pyarrow
-alibi-detect==0.13.0
-matplotlib
