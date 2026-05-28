@@ -56,6 +56,8 @@ El pipeline está definido en un único DAG que cubre todo el proceso, desde la 
 **Tasks:**
 `download_raw_data` → `build_offline_store` → `feast_apply_task` → `populate_online_store_task`
 
+>**Nota:** Este DAG esta programado para correr el primer día de cada mes a las 00:05 UTC
+
 ### 2. Training (DAG:  `ml_training_pipeline`)
 
 Entrena múltiples experimentos definidos en YAML (`experimentos/*.yaml`). Cada YAML declara el `model_type`, `model_params`, `target` y `features` por experimento. Se loggea a MLflow con `autolog` y se crean los logged models.
@@ -63,7 +65,6 @@ Entrena múltiples experimentos definidos en YAML (`experimentos/*.yaml`). Cada 
 Parámetros del DAG:
 - `experiment_name`: nombre del archivo YAML sin extensión (ej: `Experimento_1`).
 - `fecha_data`: `Ultima(Default)` usa `well_features.parquet`; cualquier otro valor busca `well_features_<fecha>.parquet`.
-
 #### Aclaración de diseño
 
 Este pipeline fue diseñado de esta manera para facilitar la **planificación y ejecución de múltiples modelos en simultáneo**, permitiendo comparar rápidamente distintas configuraciones (features, hiperparámetros, targets, etc.) sin necesidad de modificar código.
@@ -93,7 +94,7 @@ Se registran los siguientes elementos:
 - `model_type`: tipo de modelo (ej: random_forest)  
 - `target`: variable objetivo a predecir  
 - `features`: conjunto de variables utilizadas en el entrenamiento  
-- `fecha_de_data`: identifica si se usó la última versión de los datos o un snapshot específico 
+- `fecha_de_data`: identifica la versión de los datos utilizados 
 
 **Naming del run en MLflow**
 
@@ -125,63 +126,102 @@ Por eso, el DAG `model_manual_migration` permite:
 - definir manualmente el `registered_model_name`,
 - y tener control total sobre qué modelo pasa a producción.
 
-### 4. API de inferencia (FastAPI + Ray Serve)
 
-FastAPI levanta al arranque cargando `gas_model@production` y `pet_model@production` desde MLflow, con sus listas de features guardadas como params del run.
+### 4. Auto-train y deploy (DAGs: `Automatic_training_gas`, `Automatic_training_pet`)
+
+Estos DAGs se generan como una **combinación de los DAGs `ml_training_pipeline` y `automatic_model_selection`**, integrando en un único flujo el entrenamiento y la selección automática del mejor modelo. En esencia, la lógica subyacente es la misma que en los pipelines separados, pero unificada para ejecutar el ciclo completo de forma end-to-end.
+
+Cada DAG corre automáticamente el día 2 de cada mes (`schedule: 5 0 2 * *`) y representa el proceso completo de reentrenamiento y promoción del modelo en producción.
+
+**Tasks:**  
+`get_experiments` → `train_model` (expand por experimento, en paralelo) → `select_best_model` → `register_and_promote`
+
+El `train_model` ejecuta todos los experimientos definidos en el YAML correspondiente (`Experimento_gas_auto.yaml` / `Experimento_pet_auto.yaml`), loggea métricas y parámetros en MLflow, y genera los runs asociados.
+
+Luego, `select_best_model` aplica la misma lógica utilizada en el DAG `automatic_model_selection`, seleccionando el mejor run en base a la `decision_metric` y la `decision_logic` (ASC/DESC).
+
+Finalmente, `register_and_promote` registra el modelo en el MLflow Model Registry y lo promueve asignando el alias `production`.
+
+Esto cierra el loop de reentrenamiento: cada mes se construye el feature store → se entrena → el mejor modelo queda como `production` → la API lo recarga automáticamente (explicado proximamente)
+
+#### Aclaración de diseño
+
+Este pipeline mantiene la misma filosofía que los DAGs originales, pero automatiza el flujo completo de entrenamiento + selección.
+
+Es importante que cada ejecución esté correctamente parametrizada, ya que la reproducibilidad y trazabilidad dependen directamente de:
+
+- `experiment_name`: identifica el conjunto de experimientos ejecutados  
+- `versión de la data`: determina qué dataset (`well_features.parquet` o versionado por fecha) se utilizó  
+- `decision_metric`: métrica usada para comparar modelos (ej: `mse`, `r2`)  
+- `decision_logic`: criterio de optimización (`ASC` o `DESC`)
+
+Esto asegura consistencia con el comportamiento definido previamente en los DAGs de entrenamiento y selección manual/automática, manteniendo trazabilidad completa entre experimientos, datos y modelos en producción.
+
+
+
+### 5. API de inferencia (FastAPI + Ray Serve)
+
+FastAPI se utiliza como capa de API HTTP, cargando al inicio los modelos `gas_model@production` y `pet_model@production` desde MLflow, junto con sus listas de features almacenadas como parámetros del run.
 
 #### Escalabilidad con Ray Serve
 
-La API corre sobre **Ray Serve** para soportar múltiples requests concurrentes sin recargar el modelo en cada llamada. El deployment se configura con `@serve.deployment(num_replicas=3)`, lo que levanta tres réplicas del servicio con el modelo ya cargado en memoria. Esto es especialmente relevante para modelos como Random Forest, donde el tiempo de carga es significativo comparado con el de predicción. Ray distribuye el tráfico entre las réplicas automáticamente.
+La API se ejecuta sobre **Ray Serve** para soportar múltiples requests concurrentes sin recargar los modelos en cada llamada. El deployment se configura con `@serve.deployment(num_replicas=3)`, lo que levanta tres réplicas del servicio con el modelo ya cargado en memoria. Ray distribuye automáticamente el tráfico entre réplicas, permitiendo escalar horizontalmente la API de forma transparente, mejorar el throughput bajo carga y reducir la latencia al evitar cuellos de botella en una única instancia.
+
+#### Integración con FastAPI (Ingress)
+
+Se utiliza `@serve.ingress(app)` para mantener la API definida en FastAPI como interfaz principal del servicio, permitiendo reutilizar rutas existentes (como `/docs`, health checks y endpoints custom) sin reescribir la lógica HTTP dentro de Ray Serve. Esto facilita la migración desde una API tradicional a un entorno distribuido sin cambios en la capa de aplicación.
 
 #### Hot reload de modelos
 
-Cada 60 segundos la API chequea si cambió la versión `production` en el registro de MLflow (`model_version_changed()`). Si detecta un cambio (por ejemplo, tras una corrida del pipeline automático), recarga el modelo sin reiniciar el container. También se expone el endpoint `POST /reload-model` para forzar el reload manualmente.
+Si han pasado más de 60 segundos desde el último chequeo y se llama al endpoint de forecast, la API verifica si cambió la versión `production` en el registro de MLflow (`model_version_changed()`). Si detecta un cambio (por ejemplo, tras una nueva corrida del pipeline automático), recarga el modelo sin necesidad de reiniciar el container.
 
-Endpoints:
+El endpoint previamente expuesto `POST /reload-model` (utilizado para forzar manualmente la recarga) fue decomisionado, ya que dejó de tener sentido en la arquitectura actual basada en múltiples réplicas. Debido al balanceo automático de Ray Serve, el request podría ser atendido por una sola réplica, dejando los modelos desincronizados respecto al resto de las instancias activas.
+#### Endpoints:
 
 | Método | Path | Descripción |
 |--------|------|-------------|
 | GET | `/health` | Healthcheck |
 | GET | `/api/v1/wells?date_query=YYYY-MM-DD` | Lista pozos con actividad en el mes previo y, por lo tanto, que se esperaria que sean activos en el mes consultado |
 | GET | `/api/v1/forecast?id_well=...&date_start=...&date_end=...` | Pronóstico mensual de `prod_gas` y `prod_pet` en el rango suministrado |
-| POST | `/reload-model` | Refresca los modelos sin reiniciar el container |
+| POST | `/reload-model` (DECOMISIONADO) | Refresca los modelos sin reiniciar el container |
 
 El `/forecast` lee la `max_fecha` del pozo, predice el mes base con el modelo (mes consecutivo al de la maxima fecha) y proyecta el resto del rango aplicando un factor de decaimiento mensual de `0.97^n`. Meses del rango de consulta anteriores al `max_fecha` se ignoran.
 
-Nota: Se extendió el schema original de `/forecast` para devolver producción de gas y petróleo por separado en lugar de un único valor agregado.
+**Nota:** Se extendió el schema original de `/forecast` para devolver producción de gas y petróleo por separado en lugar de un único valor agregado.
 
-### 5. Auto-train y deploy (DAGs: `Automatic_training_gas`, `Automatic_training_pet`)
-
-Estos DAGs corren automáticamente el día 2 de cada mes (`schedule: 5 0 2 * *`, `is_paused_upon_creation=True`). Cada uno integra en un único pipeline el ciclo completo para su modelo:
-
-**Tasks:** `get_experiments` → `train_model` (expand por experimento, paralelo) → `select_best_model` → `register_and_promote`
-
-El `train_model` itera sobre todos los experimentos definidos en el YAML correspondiente (`Experimento_gas_auto.yaml` / `Experimento_pet_auto.yaml`), loggea a MLflow y registra métricas. El `select_best_model` busca el mejor run según `decision_metric` (default: `mse`, `ASC`) y lo pasa a `register_and_promote`, que crea la versión en el Model Registry y setea el alias `production`.
-
-Esto cierra el loop de reentrenamiento: cada mes se construye el feature store → se entrena → el mejor modelo queda como `production` → la API lo recarga automáticamente.
 
 ### 6. Drift detection + Model decay (DAG: `drift_and_decay_report`)
 
 Compara el snapshot actual del feature store contra el snapshot con el que se entrenó cada modelo y reporta:
 
-- **KS Drift** (univariado): test de Kolmogorov–Smirnov por feature. Detecta cambios en la distribución marginal de cada variable. p-value < 0.05 ⇒ drift en esa feature.
-- **Classifier Drift** (multivariado): entrena un `RandomForestClassifier` para distinguir referencia vs. actual. Si AUC ≫ 0.5 con p-value < 0.05 ⇒ las distribuciones conjuntas son distinguibles. Las feature importances señalan cuál cambió más.
-- **Model decay**: re-evalúa el modelo productivo (`gas_model@production`, `pet_model@production`) sobre los datos actuales con ground truth y compara MSE/R² contra los valores loggeados en el run de entrenamiento.
+- **KS Drift** (univariado): 
+  - test de Kolmogorov–Smirnov por feature para detectar cambios en la distribución marginal de cada variable.
+  - Un `p-value < 0.05` indica drift en esa feature.
+- **Classifier Drift** (multivariado): 
+  - Entrena un `RandomForestClassifier` para distinguir registros del dataset de referencia vs. el dataset actual.
+  - Si `AUC ≫ 0.5` con `p-value < 0.05`, se considera evidencia de drift multivariado, indicando que las distribuciones conjuntas cambiaron significativamente.
+  - Además, las feature_importances permiten identificar qué variables explican más la diferencia entre ambos datasets.
+- **Model decay**: 
+  - Se re-evalúa el modelo productivo (`gas_model@production`, `pet_model@production`) sobre los datos actuales con ground truth disponible y compara MSE/R² contra los valores loggeados en el run de entrenamiento.
 
-Los métodos se eligieron siguiendo la práctica de Clase 6: el KS es rápido pero **no detecta drift de correlación**, mientras que ClassifierDrift sí lo detecta pero es más costoso. Son complementarios.
+> Nota: Los métodos se eligieron siguiendo la práctica de Clase 6: el KS es rápido y simple para detectar drift univariado, aunque no captura cambios en correlaciones entre variables. Por otro lado, el ClassifierDrift sí permite detectar cambios multivariados y drift de correlación, aunque con mayor costo computacional. Ambos enfoques se utilizan de forma complementaria.
 
-La referencia de cada modelo se obtiene automáticamente del param `fecha_de_data` guardado en MLflow al momento del entrenamiento — no hace falta indicarla manualmente.
+La referencia utilizada para cada modelo se obtiene automáticamente a partir del parámetro `fecha_de_data` almacenado en MLflow durante el entrenamiento, por lo que no es necesario indicar manualmente qué snapshot usar como baseline.
 
-Parámetro del DAG:
+**Parámetro del DAG:**
 
-- `current_snapshot`: `Latest` (default), o una fecha `AAAAMMDD`.
+- `current_snapshot`: `Latest` (default), o una fecha `AAAAMMDD` de la data a utilizar.
 
 Cada corrida crea un run en el experimento **`monitoring`** de MLflow con:
 
-- Métricas: `gas_ks_n_features_drifted`, `gas_ks_min_pvalue`, `gas_classifier_auc`, `gas_classifier_p_value`, `gas_mse_current`, `gas_r2_current`, `gas_mse_delta`, `gas_r2_delta` (y análogas para `pet_`).
-- Artifacts: `drift_report.html` (resumen visual con veredicto por modelo), `ks_results.csv`, `classifier_importances.csv`, histogramas y barras de importances en PNG.
+- **Métricas:** `gas_ks_n_features_drifted`, `gas_ks_min_pvalue`, `gas_classifier_auc`, `gas_classifier_p_value`, `gas_mse_current`, `gas_r2_current`, `gas_mse_delta`, `gas_r2_delta` (y análogas para `pet_`).
+- **Artifacts:** `drift_report.html` (resumen visual con veredicto por modelo), `ks_results.csv`, `classifier_importances.csv`, histogramas y barras de importances en PNG.
 
-Veredicto por modelo en el HTML: **REVISAR MODELO** si hay drift en KS o classifier, o si `|R²_delta| > 0.1`. **OK** en caso contrario.
+**Veredicto por modelo en el HTML**
+
+El reporte HTML genera automáticamente un estado por modelo: 
+- `REVISAR MODELO`: si hay drift en KS o classifier, o si `|R²_delta| > 0.1`. 
+- `OK`: en caso contrario.
 
 ## Estructura
 
