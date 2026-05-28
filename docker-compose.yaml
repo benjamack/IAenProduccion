@@ -116,7 +116,7 @@ services:
       - ./mlruns:/mlflow/mlruns
     command: >
       mlflow server
-      --backend-store-uri sqlite:////mlflow/mlflow_db/mlflow.db
+      --backend-store-uri sqlite:///mlflow/mlflow.db
       --default-artifact-root /mlflow/mlruns
       --host 0.0.0.0
       --port 9090
